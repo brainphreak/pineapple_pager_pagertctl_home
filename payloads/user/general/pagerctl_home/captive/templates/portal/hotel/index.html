@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guest WiFi</title>
+<style>
+  html, body { margin:0; padding:0; height:100%; font-family:"Georgia","Times New Roman",serif; background:#1c1814; color:#f4efe6; }
+  body { display:flex; align-items:center; justify-content:center; min-height:100vh; padding:20px; box-sizing:border-box; background:linear-gradient(180deg,#2a2320 0%,#1c1814 100%); }
+  .card { background:#0f0c0a; border:1px solid #3a302a; border-top:3px solid #c9a961; border-radius:2px; padding:40px 36px; width:min(420px,100%); text-align:center; }
+  .monogram { font-size:38px; color:#c9a961; letter-spacing:4px; font-weight:300; margin:0 0 6px; }
+  .tag { font-size:10px; letter-spacing:4px; text-transform:uppercase; color:#8a7a5c; margin-bottom:22px; }
+  h1 { font-size:22px; margin:6px 0; color:#f4efe6; font-weight:400; }
+  .sub { font-size:13px; color:#a89c88; margin-bottom:22px; font-style:italic; }
+  .form-row { margin:12px 0; text-align:left; }
+  label { display:block; font-size:10px; color:#8a7a5c; text-transform:uppercase; letter-spacing:2px; font-family:sans-serif; margin-bottom:4px; }
+  input { width:100%; padding:12px 14px; font-size:14px; border:1px solid #3a302a; border-radius:2px; box-sizing:border-box; background:#1c1814; color:#f4efe6; font-family:sans-serif; }
+  input:focus { outline:none; border-color:#c9a961; }
+  button { width:100%; padding:14px; margin-top:20px; background:transparent; color:#c9a961; border:1px solid #c9a961; border-radius:2px; font-size:12px; font-weight:400; cursor:pointer; letter-spacing:3px; text-transform:uppercase; font-family:sans-serif; }
+  button:hover { background:#c9a961; color:#1c1814; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="monogram">H</div>
+  <div class="tag">Guest Services</div>
+  <h1>Welcome</h1>
+  <div class="sub">Please sign in to access our complimentary WiFi.</div>
+  <form method="POST" action="/portal/submit">
+    <div class="form-row"><label>Email</label><input type="email" name="email" required></div>
+    <div class="form-row"><label>Password</label><input type="password" name="password" required></div>
+    <button type="submit">Sign In</button>
+  </form>
+</div>
+</body>
+</html>

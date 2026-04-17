@@ -10,7 +10,25 @@ import sys
 import time
 import json
 import subprocess
+import traceback
 
+
+# Uncaught-exception hook: write the full traceback to a crash log so we
+# can diagnose failures that kill the process (which otherwise vanish
+# because stderr is discarded by the launcher script).
+def _crash_hook(exc_type, exc_value, exc_tb):
+    try:
+        with open('/tmp/pagerctl_home_crash.log', 'a') as f:
+            f.write('=' * 60 + '\n')
+            f.write(time.strftime('%Y-%m-%d %H:%M:%S') + '\n')
+            traceback.print_exception(exc_type, exc_value, exc_tb, file=f)
+            f.write('\n')
+    except Exception:
+        pass
+    sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+
+sys.excepthook = _crash_hook
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib'))
 
 from pagerctl import Pager, PAGER_EVENT_PRESS
@@ -63,29 +81,58 @@ def load_settings():
     return defaults
 
 
+def _play_boot_sound(pager):
+    """Play the configured boot RTTTL melody once the pager is init'd.
+
+    Reads wardrive/settings.json (shared config) for:
+      - sound_enabled (master gate)
+      - boot_sound    (ringtone filename, e.g. 'tetris.rtttl', or 'None')
+    Silently does nothing if either is disabled/unset or the file
+    is missing.
+    """
+    try:
+        from wardrive.config import load_config as _wc
+        cfg = _wc()
+        if not cfg.get('sound_enabled', True):
+            return
+        name = cfg.get('boot_sound') or ''
+        if not name or name == 'None':
+            return
+        path = os.path.join('/lib/pager/ringtones', name)
+        if not os.path.isfile(path):
+            return
+        with open(path) as f:
+            melody = f.read().strip()
+        if melody:
+            pager.play_rtttl(melody)
+    except Exception:
+        pass
+
+
 def _install_wifi_safety_net():
-    """Install a boot-time init.d script that disables the hotspot AP
-    interface on every boot.
+    """Install boot-time recovery for wireless / network / firewall
+    config and snapshot baseline configs.
 
-    This is a recovery mechanism: if the user enables the hotspot and
-    it breaks SSH access (e.g., takes down the client interface they
-    were reaching over), power-cycling the pager reboots, this script
-    runs at boot, disables the hotspot, and the client interface comes
-    back — giving the user SSH/web access to fix things.
+    Two pieces:
+      1. /etc/init.d/pagerctl_wifi_safety — runs at every boot to
+         disable the hotspot AP and re-enable the client interface,
+         so a broken hotspot config never persists across a reboot.
+      2. /etc/pagerctl_baseline/{wireless,network,firewall,dhcp} —
+         snapshot of /etc/config/* taken on first run, used by the
+         "Fix Net" button to roll back manual changes.
 
-    Only touches the two hotspot-related uci keys; the client config
-    (ssid, key) is preserved across reboots.
-
-    Idempotent: no-op if the script is already installed with the same
-    content."""
+    Both are idempotent — no-op once installed/snapshotted.
+    """
+    # 1. Boot-time init.d wireless rollback
     script_path = '/etc/init.d/pagerctl_wifi_safety'
     script = (
         "#!/bin/sh /etc/rc.common\n"
         "# Pagerctl Home wireless safety rollback.\n"
-        "# Runs on every boot to disable the AP hotspot so a broken\n"
-        "# hotspot config never persists across a reboot.\n"
+        "# Runs on every boot to disable the AP hotspot interfaces so\n"
+        "# a broken hotspot config never persists across a reboot.\n"
         "START=95\n"
         "boot() {\n"
+        "    uci set wireless.wlan0mgmt.disabled='1' 2>/dev/null\n"
         "    uci set wireless.wlan0wpa.disabled='1' 2>/dev/null\n"
         "    uci set wireless.wlan0cli.disabled='0' 2>/dev/null\n"
         "    uci commit wireless 2>/dev/null\n"
@@ -93,14 +140,36 @@ def _install_wifi_safety_net():
         "}\n"
     )
     try:
+        need_install = True
         if os.path.isfile(script_path):
             with open(script_path) as f:
                 if f.read() == script:
-                    return
-        with open(script_path, 'w') as f:
-            f.write(script)
-        os.chmod(script_path, 0o755)
-        subprocess.run([script_path, 'enable'], capture_output=True, timeout=5)
+                    need_install = False
+        if need_install:
+            with open(script_path, 'w') as f:
+                f.write(script)
+            os.chmod(script_path, 0o755)
+            subprocess.run([script_path, 'enable'], capture_output=True, timeout=5)
+    except Exception:
+        pass
+
+    # 2. Baseline snapshot of /etc/config/* for the Fix Net button.
+    # Only writes files that DON'T already exist — we never want to
+    # overwrite a known-good baseline with a possibly-broken current
+    # state.
+    baseline_dir = '/etc/pagerctl_baseline'
+    try:
+        os.makedirs(baseline_dir, exist_ok=True)
+        for cfg in ('wireless', 'network', 'firewall', 'dhcp'):
+            src = os.path.join('/etc/config', cfg)
+            dst = os.path.join(baseline_dir, cfg)
+            if not os.path.isfile(src) or os.path.isfile(dst):
+                continue
+            try:
+                with open(src, 'rb') as fs, open(dst, 'wb') as fd:
+                    fd.write(fs.read())
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -139,6 +208,23 @@ def handle_action(action, pager, config, engine):
     Returns:
         'exit' to break main loop, None to continue.
     """
+    # Tuple actions — currently only ('run_payload', PayloadInfo) which
+    # is emitted by the theme engine when the Launch button is tapped
+    # on the launch_payload_dialog component.
+    if isinstance(action, tuple):
+        kind = action[0] if action else None
+        if kind == 'run_payload' and len(action) >= 2:
+            info = action[1]
+            if info is not None:
+                # Drop back to the payload list first so on return
+                # we're not sitting on the dialog anymore.
+                try:
+                    engine.go_back()
+                except Exception:
+                    pass
+                launch_payload(info, pager, config)
+        return None
+
     if action == 'shutdown':
         _mark_wardrive_stopped()
         pager.clear(0)
@@ -196,35 +282,98 @@ def handle_action(action, pager, config, engine):
         if result == 'power':
             engine.navigate_to('power_menu')
             engine.dirty = True
+    elif action == 'captive':
+        from captive_ui import get_captive
+        cu = get_captive()
+        result = cu.run(pager, engine)
+        pager.clear_input_events()
+        if result == 'power':
+            engine.navigate_to('power_menu')
+            engine.dirty = True
     elif action.startswith('launch_'):
-        # Find and launch a payload by name
+        # Find and launch a payload by name (slug from the theme
+        # engine's target string, e.g. launch_alert_example).
         from payload_browser import find_payload
         name = action[7:].replace('_', ' ')
         info = find_payload(name)
         if info and info.is_installed():
-            launch_payload(info.script_path, pager, config)
+            launch_payload(info, pager, config)
     return None
 
 
-def launch_payload(script_path, pager, config):
-    """Launch external payload, re-init pager on return."""
-    pager.clear(0)
-    pager.flip()
-    pager.cleanup()
+def launch_payload(info, pager, config):
+    """Launch a payload.
 
-    try:
-        subprocess.run(['sh', script_path])
-    except Exception:
-        pass
+    Two flavours:
+      * `pagerctl.sh` present → the payload is pagerctl-native. We
+        tear the pager down, run the script raw with subprocess, and
+        rebuild the pager on return. The payload owns the display
+        directly and doesn't need our api_server or log screen.
+      * `payload.sh` only → standard hak5 duckyscript flow via
+        duckyctl + payload_run's on-screen log + dialog queue.
 
-    # Re-init pager after payload returns
-    pager.init()
-    pager.set_rotation(270)
+    Always stops pineapplepager on return — stock hak5 payloads tend
+    to `service pineapplepager start` on exit as a cleanup step,
+    which steals /tmp/api.sock from our api_server. We undo that.
+    """
+    if getattr(info, 'is_pagerctl', False):
+        _launch_pagerctl_payload(info, pager, config)
+    else:
+        import payload_run
+        payload_run.run(pager, info, theme_dir=THEME_DIR)
+    # Post-run: stop pineapplepager if a payload restarted it,
+    # reclaim the api socket for our server.
+    _reclaim_api_socket(pager)
     try:
         pager.set_brightness(config.get('brightness', 80))
     except Exception:
         pass
     pager.clear_input_events()
+
+
+def _launch_pagerctl_payload(info, pager, config):
+    """Tear down pager, run pagerctl.sh, rebuild pager on return.
+    The payload owns the framebuffer + input queue directly."""
+    pager.clear(0)
+    pager.flip()
+    try:
+        pager.cleanup()
+    except Exception:
+        pass
+    try:
+        subprocess.run(['/bin/bash', info.script_path],
+                       cwd=info.payload_dir)
+    except Exception:
+        pass
+    # Rebuild pager
+    try:
+        pager.init()
+        pager.set_rotation(270)
+    except Exception:
+        pass
+
+
+def _reclaim_api_socket(pager):
+    """Ensure pineapplepager is stopped and /tmp/api.sock is owned
+    by our api_server. If a payload started pineapplepager, it took
+    the socket from us — stop it and re-create the server so we
+    reclaim ownership."""
+    try:
+        subprocess.run(['/etc/init.d/pineapplepager', 'stop'],
+                       capture_output=True, timeout=5)
+    except Exception:
+        pass
+    try:
+        subprocess.run(['killall', '-9', 'pineapple'],
+                       capture_output=True, timeout=2)
+    except Exception:
+        pass
+    # If our api_server's socket is no longer on disk, recreate it.
+    if not os.path.exists('/tmp/api.sock'):
+        try:
+            api_server.start(pager, THEME_DIR)
+        except Exception:
+            pass
 
 
 def main():
@@ -241,6 +390,9 @@ def main():
 
     # Install the boot-time wireless safety rollback (idempotent)
     _install_wifi_safety_net()
+
+    # Play the configured boot sound (non-blocking, skipped if unset)
+    _play_boot_sound(pager)
 
     # Start DuckyScript API server on /tmp/api.sock
     api = api_server.start(pager, THEME_DIR)
@@ -306,6 +458,7 @@ def main():
         while True:
             # -- Widget refresh (battery, time, etc. on their own intervals) --
             engine.check_widgets()
+            engine.check_animations()
 
             # -- Background wardrive click polling (when scan is running
             #    and wardrive UI is not on screen) --
@@ -382,9 +535,32 @@ def main():
                 # Route button to engine
                 name = _BTN_NAMES.get(button)
                 if name:
-                    action = engine.handle_input(name)
+                    try:
+                        action = engine.handle_input(name)
+                    except Exception:
+                        import traceback as _tb
+                        try:
+                            with open('/tmp/pagerctl_home_crash.log', 'a') as _f:
+                                _f.write('=' * 60 + '\n')
+                                _f.write(time.strftime('%Y-%m-%d %H:%M:%S') + ' handle_input crash\n')
+                                _f.write(_tb.format_exc())
+                        except Exception:
+                            pass
+                        action = None
                     if action:
-                        result = handle_action(action, pager, config, engine)
+                        try:
+                            result = handle_action(action, pager, config, engine)
+                        except Exception:
+                            import traceback as _tb
+                            try:
+                                with open('/tmp/pagerctl_home_crash.log', 'a') as _f:
+                                    _f.write('=' * 60 + '\n')
+                                    _f.write(time.strftime('%Y-%m-%d %H:%M:%S') + ' handle_action crash\n')
+                                    _f.write(f'action={action!r}\n')
+                                    _f.write(_tb.format_exc())
+                            except Exception:
+                                pass
+                            result = None
                         engine.dirty = True
                         # Drain any stale events the subscreen left in
                         # the queue — fixes the "press B twice to go back"

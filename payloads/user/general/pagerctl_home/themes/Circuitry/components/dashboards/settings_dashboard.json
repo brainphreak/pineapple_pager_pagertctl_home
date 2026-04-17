@@ -84,11 +84,6 @@
           "action": "test_vibrate"
         },
         {
-          "label": "Wardrive Clicks",
-          "key": "geiger_sound",
-          "type": "toggle"
-        },
-        {
           "label": "Boot Sound",
           "key": "boot_sound",
           "type": "cycle",
@@ -146,7 +141,8 @@
         {
           "label": "Device",
           "type": "action",
-          "action": "gps_pick_device"
+          "action": "gps_pick_device",
+          "value_source": "gps_device"
         },
         {
           "label": "Baud",
@@ -167,8 +163,8 @@
       "items": [
         {
           "label": "Connected",
-          "type": "action",
-          "action": "wifi_status"
+          "type": "live_value",
+          "value_source": "wifi_ssid"
         },
         {
           "label": "Scan & Connect",
@@ -178,7 +174,14 @@
         {
           "label": "Hotspot",
           "type": "action",
-          "action": "wifi_hotspot_toggle"
+          "action": "wifi_hotspot_toggle",
+          "value_source": "wifi_hotspot_state"
+        },
+        {
+          "label": "PineAP Capture",
+          "type": "action",
+          "action": "wifi_pineap_toggle",
+          "value_source": "wifi_pineap_state"
         },
         {
           "label": "Hotspot SSID",
@@ -190,6 +193,11 @@
           "key": "hotspot_password",
           "type": "edit_string",
           "secret": true
+        },
+        {
+          "label": "Fix Net",
+          "type": "action",
+          "action": "wifi_fix_net"
         },
         {
           "label": "Wardrive 2.4GHz",

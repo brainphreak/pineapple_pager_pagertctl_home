@@ -9,9 +9,65 @@ Runs as a daemon thread — started by pagerctl_home.py.
 import glob
 import json
 import os
+import queue
 import socketserver
 import threading
 from http.server import BaseHTTPRequestHandler
+
+
+# ----------------------------------------------------------------------
+# Dialog request queue
+#
+# Duckyscript interact commands (ALERT, LIST_PICKER, PROMPT, etc.) run
+# on the HTTP handler threads — they can't draw to the display or read
+# buttons safely from there. Instead each handler enqueues a
+# DialogRequest and blocks on `response_event`. When a payload is
+# running, payload_run.run() services this queue from the main UI
+# thread: renders the right themed dialog, reads input, fills in
+# `response`, and sets the event so the HTTP handler can return.
+# ----------------------------------------------------------------------
+
+class DialogRequest:
+    __slots__ = ('kind', 'data', 'response', 'response_event', 'cancelled')
+
+    def __init__(self, kind, data):
+        self.kind = kind            # 'alert' | 'error' | 'confirm' | 'list' | 'prompt' | 'number' | 'ip' | 'mac' | 'spinner_start' | 'spinner_stop' | 'wait_button'
+        self.data = data or {}
+        self.response = None
+        self.response_event = threading.Event()
+        self.cancelled = False
+
+
+# Global queue + helper. None = no payload running, handlers should
+# fall back to immediate canned responses.
+dialog_queue = queue.Queue()
+
+
+def request_dialog(kind, data, timeout=600.0):
+    """Called from an api_server handler thread. Enqueues a dialog
+    request and blocks until payload_run services it OR the timeout
+    expires. Returns the `response` dict or None on timeout/cancel."""
+    req = DialogRequest(kind, data)
+    try:
+        dialog_queue.put_nowait(req)
+    except Exception:
+        return None
+    if not req.response_event.wait(timeout=timeout):
+        req.cancelled = True
+        return None
+    return req.response
+
+
+def cancel_all_dialogs():
+    """Called by payload_run when a payload stops. Drains pending
+    requests so their waiting handlers unblock with None."""
+    while True:
+        try:
+            req = dialog_queue.get_nowait()
+        except queue.Empty:
+            return
+        req.cancelled = True
+        req.response_event.set()
 
 
 SOCKET_PATH = '/tmp/api.sock'
@@ -39,64 +95,37 @@ _LOG_MAX_CHARS = 50
 
 
 class PayloadLog:
-    """Manages the payload log display — themed scrollable text on screen."""
+    """Stores payload log lines. Rendering is handled by payload_run
+    so there is exactly one place drawing the screen during a run —
+    previously api_server and payload_run were both redrawing from
+    different threads and fighting over the framebuffer."""
 
     def __init__(self):
         self.lines = []       # list of (text, color_name)
-        self.bg_handle = None
-        self.running_handle = None
-        self.initialized = False
+        self._lock = threading.Lock()
 
     def reset(self):
-        self.lines = []
-        self.initialized = False
+        with self._lock:
+            self.lines = []
 
     def add(self, msg, color_name='white'):
-        self.lines.append((msg[:_LOG_MAX_CHARS], color_name))
-        # Write to file too
+        with self._lock:
+            self.lines.append((msg[:_LOG_MAX_CHARS], color_name))
         try:
             with open(LOG_FILE, 'a') as f:
                 f.write(msg + '\n')
         except Exception:
             pass
 
-    def render(self, pager, theme_dir):
-        """Redraw the full payload log screen."""
-        if not pager:
-            return
-        try:
-            # Load background on first render
-            if not self.initialized:
-                bg_path = os.path.join(theme_dir, 'assets/payloadlog/payload_log_bg.png')
-                if os.path.exists(bg_path):
-                    self.bg_handle = pager.load_image(bg_path)
-                run_path = os.path.join(theme_dir, 'assets/payloadlog/payload_running_indicator.png')
-                if os.path.exists(run_path):
-                    self.running_handle = pager.load_image(run_path)
-                self.initialized = True
+    def snapshot(self):
+        """Return a safe copy of the current lines for rendering."""
+        with self._lock:
+            return list(self.lines)
 
-            # Draw background
-            if self.bg_handle:
-                pager.draw_image(0, 0, self.bg_handle)
-            else:
-                pager.clear(0)
-
-            # Draw visible lines (last N lines, auto-scroll)
-            visible = self.lines[-_LOG_MAX_LINES:]
-            y = _LOG_START_Y
-            for text, color_name in visible:
-                rgb = _LOG_COLORS.get(color_name, (255, 255, 255))
-                c = pager.rgb(rgb[0], rgb[1], rgb[2])
-                pager.draw_text(_LOG_START_X, y, text, c, 1)
-                y += _LOG_LINE_H
-
-            # Running indicator
-            if self.running_handle:
-                pager.draw_image(0, 179, self.running_handle)
-
-            pager.flip()
-        except Exception:
-            pass
+    # Legacy no-op: some older callers invoke render() directly. Kept
+    # so nothing crashes while we migrate them.
+    def render(self, pager=None, theme_dir=None):
+        return
 
 
 # Shared log instance
@@ -161,26 +190,27 @@ class ApiHandler(BaseHTTPRequestHandler):
         if path == 'payload/interact/wait_for_input':
             return self._wait_input(data)
         if path == 'payload/interact/alert':
-            _payload_log.reset()  # new payload, reset log screen
-            return self._log_interact('ALERT', data)
+            return self._dialog('alert', data, fallback={'success': True})
         if path == 'payload/interact/error':
-            return self._log_interact('ERROR', data)
+            return self._dialog('error', data, fallback={'success': True})
         if path == 'payload/interact/confirmation':
-            return {'confirmed': True}
+            return self._dialog('confirm', data, fallback={'confirmed': True})
         if path == 'payload/interact/list_picker':
-            return self._wait_input(data)  # simplified: wait for button
+            return self._dialog('list', data, fallback={'selected': data.get('default', '')})
         if path == 'payload/interact/string_picker':
-            return {'text': data.get('default', '')}
+            return self._dialog('string', data, fallback={'text': data.get('default', '')})
         if path == 'payload/interact/ip_picker':
-            return {'text': data.get('default', '0.0.0.0')}
+            return self._dialog('ip', data, fallback={'text': data.get('default', '0.0.0.0')})
         if path == 'payload/interact/mac_picker':
-            return {'text': data.get('default', '00:00:00:00:00:00')}
+            return self._dialog('mac', data, fallback={'text': data.get('default', '00:00:00:00:00:00')})
         if path == 'payload/interact/number_picker':
-            return {'text': data.get('default', '0')}
+            return self._dialog('number', data, fallback={'text': data.get('default', '0')})
         if path == 'payload/interact/prompt':
-            return self._wait_input(data)
-        if path.startswith('payload/interact/spinner'):
-            return {'id': '1', 'success': True}
+            return self._dialog('prompt', data, fallback={'text': data.get('default', '')})
+        if path == 'payload/interact/spinner/start':
+            return self._dialog('spinner_start', data, fallback={'id': '1', 'success': True})
+        if path.startswith('payload/interact/spinner/stop'):
+            return self._dialog('spinner_stop', data, fallback={'success': True})
 
         # Payload config
         if path.startswith('payload/config'):
@@ -287,14 +317,22 @@ class ApiHandler(BaseHTTPRequestHandler):
         msg = data.get('message', data.get('text', ''))
         color_name = data.get('color', 'green')
         _payload_log.add(msg, color_name)
-        _payload_log.render(self.server.pager, self.server.theme_dir)
         return {'success': True}
+
+    def _dialog(self, kind, data, fallback=None):
+        """Block on the dialog queue until payload_run services the
+        request. If no run loop is listening (timeout) or the payload
+        is being stopped, return the fallback canned response so
+        duckyscript commands still exit cleanly."""
+        response = request_dialog(kind, data, timeout=600.0)
+        if response is None:
+            return fallback or {'success': True}
+        return response
 
     def _log_interact(self, kind, data):
         msg = data.get('message', data.get('text', data.get('title', '')))
         color = 'red' if kind == 'ERROR' else 'yellow'
         _payload_log.add(f'[{kind}] {msg}', color)
-        _payload_log.render(self.server.pager, self.server.theme_dir)
         return {'success': True}
 
     def _wait_input(self, data):

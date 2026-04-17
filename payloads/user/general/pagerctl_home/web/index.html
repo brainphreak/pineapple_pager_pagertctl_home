@@ -12,13 +12,29 @@
             <span class="nav-icon">&#9876;</span>
             <span class="nav-label">Dashboard</span>
         </a>
-        <a href="#display" data-tab="display" class="nav-item">
-            <span class="nav-icon">&#9638;</span>
-            <span class="nav-label">Display</span>
+        <a href="#captive" data-tab="captive" class="nav-item">
+            <span class="nav-icon">&#9873;</span>
+            <span class="nav-label">Captive</span>
+        </a>
+        <a href="#wardrive" data-tab="wardrive" class="nav-item">
+            <span class="nav-icon">&#8982;</span>
+            <span class="nav-label">Wardrive</span>
+        </a>
+        <a href="#loot" data-tab="loot" class="nav-item">
+            <span class="nav-icon">&#9830;</span>
+            <span class="nav-label">Loot</span>
+        </a>
+        <a href="#settings" data-tab="settings" class="nav-item">
+            <span class="nav-icon">&#9881;</span>
+            <span class="nav-label">Settings</span>
         </a>
         <a href="#terminal" data-tab="terminal" class="nav-item">
             <span class="nav-icon">&gt;_</span>
             <span class="nav-label">Terminal</span>
+        </a>
+        <a href="#display" data-tab="display" class="nav-item">
+            <span class="nav-icon">&#9638;</span>
+            <span class="nav-label">Display</span>
         </a>
     </nav>
 
@@ -26,13 +42,32 @@
 
     <main id="content">
         <section id="tab-dashboard" class="tab-panel"></section>
-        <section id="tab-display" class="tab-panel"></section>
+        <section id="tab-captive" class="tab-panel"></section>
+        <section id="tab-wardrive" class="tab-panel"></section>
+        <section id="tab-loot" class="tab-panel"></section>
+        <section id="tab-settings" class="tab-panel"></section>
         <section id="tab-terminal" class="tab-panel"></section>
+        <section id="tab-display" class="tab-panel"></section>
     </main>
+
+    <div id="confirm-modal" class="modal hidden">
+        <div class="modal-backdrop"></div>
+        <div class="modal-content card">
+            <p id="confirm-message"></p>
+            <div class="modal-actions">
+                <button id="confirm-yes" class="btn btn-gold">Confirm</button>
+                <button id="confirm-no" class="btn btn-muted">Cancel</button>
+            </div>
+        </div>
+    </div>
 
     <script src="/web/scripts/app.js"></script>
     <script src="/web/scripts/dashboard.js"></script>
-    <script src="/web/scripts/display.js"></script>
+    <script src="/web/scripts/captive.js"></script>
+    <script src="/web/scripts/wardrive.js"></script>
+    <script src="/web/scripts/loot.js"></script>
+    <script src="/web/scripts/settings.js"></script>
     <script src="/web/scripts/terminal.js"></script>
+    <script src="/web/scripts/display.js"></script>
 </body>
 </html>

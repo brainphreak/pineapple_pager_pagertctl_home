@@ -19,7 +19,7 @@ from wardrive.config import (load_config, save_config, SETTINGS_FILE,
                               backup_settings, list_backups, restore_backup)
 from wardrive.web_server import wait_any_button
 from wardrive.gps_utils import (detect_gps_devices, get_device_name,
-                                 short_device_label)
+                                 short_device_label, get_gpsd_baud)
 from wardrive import wifi_utils
 
 
@@ -190,7 +190,11 @@ class SettingsUI:
     def _item_loop(self, categories, cat_index):
         """Right pane: items within a category, showing live values.
         Left pane: category list stays visible with the active category
-        highlighted (dim, not selectable while we're drilling into items)."""
+        highlighted (dim, not selectable while we're drilling into items).
+
+        Scrolls when the list is longer than the visible window. A small
+        up/down arrow indicator is drawn when more items exist above or
+        below the current view."""
         cfg = self._layout
         category = categories[cat_index]
         items = category.get('items', [])
@@ -202,29 +206,54 @@ class SettingsUI:
         right_x = cfg.get('right_x', 180)
         y_start = cfg.get('y_start', 52)
 
+        # How many rows fit between y_start and the status bar / bottom
+        bottom_limit = 190
+        max_visible = max(1, (bottom_limit - y_start) // row_h)
+
         selected = 0
+        scroll = 0
         while True:
+            # Adjust scroll so `selected` is always on screen
+            if selected < scroll:
+                scroll = selected
+            elif selected >= scroll + max_visible:
+                scroll = selected - max_visible + 1
+
             self._draw_bg()
 
-            # Left pane: category list, active one highlighted dim
+            # Left pane: category list (always short so no scroll needed)
             for i, c in enumerate(categories):
                 y = y_start + i * row_h
                 label = c.get('label', '?')
                 color = self._color('category_selected') if i == cat_index else self._color('dim')
                 self.pager.draw_ttf(left_x, y, label, color, FONT_MENU, fs)
 
-            # Draw items with current values
-            for i, item in enumerate(items):
-                y = y_start + i * row_h
+            # Visible slice of items
+            visible_end = min(scroll + max_visible, len(items))
+            for draw_row, i in enumerate(range(scroll, visible_end)):
+                item = items[i]
+                y = y_start + draw_row * row_h
                 label = item.get('label', '?')
                 value = self._format_item_value(item)
                 is_sel = (i == selected)
                 label_c = self._color('category_selected' if is_sel else 'category')
                 value_c = self._color('value_selected' if is_sel else 'value')
-                self.pager.draw_ttf(right_x, y, label + ':', label_c, FONT_MENU, fs)
-                lw = self.pager.ttf_width(label + ':', FONT_MENU, fs)
+                # Only show "Label:" when there's a value to follow it.
+                # Pure-action rows (no value) just show the label.
                 if value:
+                    label_text = label + ':'
+                    self.pager.draw_ttf(right_x, y, label_text, label_c, FONT_MENU, fs)
+                    lw = self.pager.ttf_width(label_text, FONT_MENU, fs)
                     self.pager.draw_ttf(right_x + lw + 6, y, value, value_c, FONT_MENU, fs)
+                else:
+                    self.pager.draw_ttf(right_x, y, label, label_c, FONT_MENU, fs)
+
+            # Scroll indicators: ^ if more above, v if more below
+            dim = self._color('dim')
+            if scroll > 0:
+                self.pager.draw_ttf(460, y_start - 2, '^', dim, FONT_MENU, fs)
+            if visible_end < len(items):
+                self.pager.draw_ttf(460, y_start + (max_visible - 1) * row_h, 'v', dim, FONT_MENU, fs)
 
             self._draw_widgets()
             self.pager.flip()
@@ -251,8 +280,17 @@ class SettingsUI:
             return 'ON' if self.config.get(item['key'], False) else 'OFF'
         if t == 'cycle':
             val = self.config.get(item['key'])
+            # Special case: GPS baud "auto" → show detected value
+            if item.get('key') == 'gps_baud' and (val == 'auto' or val == 0):
+                detected = get_gpsd_baud(self.config.get('gps_device', ''))
+                return f'auto ({detected})' if detected else 'auto'
             return self._format_scalar(val, item)
         if t == 'action':
+            # Actions can optionally show a live value beside the
+            # label (e.g. Hotspot action shows Enabled/Disabled).
+            src = item.get('value_source')
+            if src:
+                return self._resolve_live_value(src)
             return ''
         if t == 'service':
             run, en = self._service_state(item.get('service_name', ''),
@@ -265,7 +303,48 @@ class SettingsUI:
             if item.get('secret'):
                 return 'set' if val else 'not set'
             return str(val) if val else '-'
+        if t == 'live_value':
+            return self._resolve_live_value(item.get('value_source', ''))
         return str(self.config.get(item.get('key'), ''))
+
+    def _resolve_live_value(self, source):
+        """Resolve a live_value item's `value_source` to a display string.
+        Add new sources here as needed."""
+        if source == 'wifi_ssid':
+            try:
+                ssid = wifi_utils.get_client_status() or wifi_utils.get_client_ssid()
+                return ssid or 'Not connected'
+            except Exception:
+                return '?'
+        if source == 'wifi_hotspot_state':
+            # wlan0mgmt is shared between the user's hotspot and the
+            # captive AP. uci `disabled=0` can't tell them apart, so
+            # defer to the captive marker: if captive owns the AP
+            # right now, report hotspot as Disabled regardless of
+            # the uci state.
+            try:
+                from captive import ap_control
+                if ap_control.marker_exists():
+                    return 'Disabled'
+            except Exception:
+                pass
+            try:
+                enabled, _, _ = wifi_utils.get_hotspot_state()
+                return 'Enabled' if enabled else 'Disabled'
+            except Exception:
+                return '?'
+        if source == 'wifi_pineap_state':
+            try:
+                return 'Enabled' if wifi_utils.get_pineap_state() else 'Disabled'
+            except Exception:
+                return '?'
+        if source == 'gps_device':
+            dev = self.config.get('gps_device') or ''
+            if not dev:
+                return 'auto'
+            # short_device_label already returns 'u-blox (ttyACM2)'
+            return short_device_label(dev)
+        return ''
 
     def _format_scalar(self, val, item):
         if val is None or val == '':
@@ -617,68 +696,124 @@ class SettingsUI:
     def _do_vibrate(self, ms=500):
         """Pulse the vibration motor.
 
-        On this hardware the motor driver only fires on GPIO
-        transitions — holding the line high for 800 ms produces a
-        split-second buzz because the driver de-energizes almost
-        immediately. A pulse train of ~100 ms pulses re-engages it on
-        every rising edge and produces a sustained vibration.
-
-        Runs in a shell subprocess (&) so the UI doesn't block.
+        On this hardware the buzzer/PWM subsystem the vibrator
+        shares goes into power-save when idle. The first vibrate
+        call after a long pause is silently dropped while the
+        subsystem wakes back up. Workaround: fire a short, very
+        quiet beep first to wake the subsystem, then run the
+        100/100/200 ms vibrate trio (matching the reference
+        demo at .../examples/demo.py).
         """
         if not self.config.get('vibrate_enabled', True):
             return
-        # 150 ms per cycle × N cycles = total duration
-        pulses = max(1, int(round(ms / 150.0)))
-        cycle = ('echo 1 > /sys/class/gpio/vibrator/value; '
-                 'sleep 0.12; '
-                 'echo 0 > /sys/class/gpio/vibrator/value; '
-                 'sleep 0.03')
-        body = '; '.join([cycle] * pulses)
-        os.system(f'({body}) &')
+        try:
+            # Subsystem wake-up — short, near-inaudible beep
+            self.pager.beep(20, 5)
+            time.sleep(0.02)
+            self.pager.vibrate(100)
+            time.sleep(0.10)
+            self.pager.vibrate(100)
+            time.sleep(0.10)
+            self.pager.vibrate(200)
+        except Exception:
+            pass
 
     def _pick_gps_device(self):
-        """Scan for GPS devices and let the user pick one. Mirrors
-        wardrive_ui's picker, shared via gps_utils."""
+        """Scan for GPS devices and let the user pick one — modal popup."""
         self._flash('Scanning for GPS...', 0.4)
         devices = detect_gps_devices()
         if not devices:
             self._flash('No GPS devices found')
             return
 
-        cfg = self._layout
-        fs = cfg.get('font_size', 18)
-        row_h = cfg.get('row_height', 22)
-        right_x = cfg.get('right_x', 220)
-        y_start = cfg.get('y_start', 52)
+        items = [(short_device_label(d), d) for d in devices]
+        items.append(("Back", None))
+        self._popup_menu("Select GPS", items, on_select=self._apply_gps_device)
+
+    def _apply_gps_device(self, dev):
+        if dev is None:
+            return
+        self.config['gps_device'] = dev
+        save_config(self.config)
+        self._flash(f"Set: {os.path.basename(dev)}")
+
+    def _popup_menu(self, title, items, on_select=None):
+        """Generic modal menu: dark bordered box centered on screen
+        showing a title + selectable items. items is a list of
+        (label, value) tuples. on_select(value) is called when the
+        user presses A on a row. B/Power exit without calling.
+        Background settings remain visible underneath."""
+        p = self.pager
+        fs = 18
+        row_h = 22
+        title_h = 26
+        # Compute widest label for box width
+        widest = max(p.ttf_width(lbl, FONT_MENU, fs) for lbl, _ in items)
+        widest = max(widest, p.ttf_width(title, FONT_MENU, fs))
+        box_w = min(SCREEN_W - 40, widest + 40)
+        box_h = title_h + len(items) * row_h + 16
+        box_h = min(box_h, SCREEN_H - 30)
+        bx = (SCREEN_W - box_w) // 2
+        by = (SCREEN_H - box_h) // 2
+
+        edge = self._color('title') if 'title' in self._layout.get('colors', {}) \
+            else p.rgb(100, 200, 255)
+        title_c = edge
+        sel_c = self._color('category_selected')
+        norm_c = self._color('category')
 
         selected = 0
-        items = [(get_device_name(d), d) for d in devices]
-        items.append(("Back", None))
+        scroll = 0
+        max_visible = max(1, (box_h - title_h - 16) // row_h)
 
         while True:
-            self._draw_bg()
-            for i, (label, _) in enumerate(items):
-                y = y_start + i * row_h
-                c = self._color('category_selected' if i == selected else 'category')
-                self.pager.draw_ttf(right_x, y, label, c, FONT_MENU, fs)
-            self._draw_widgets()
-            self.pager.flip()
+            # Don't redraw background — keep settings visible underneath.
+            # Only redraw the popup box.
+            p.fill_rect(bx, by, box_w, box_h, p.rgb(0, 0, 0))
+            # Border (4 thin rects)
+            p.fill_rect(bx, by, box_w, 1, edge)
+            p.fill_rect(bx, by + box_h - 1, box_w, 1, edge)
+            p.fill_rect(bx, by, 1, box_h, edge)
+            p.fill_rect(bx + box_w - 1, by, 1, box_h, edge)
 
-            btn = wait_any_button(self.pager)
-            if btn & self.pager.BTN_UP:
+            # Title
+            tw = p.ttf_width(title, FONT_MENU, fs)
+            p.draw_ttf(bx + (box_w - tw) // 2, by + 6, title, title_c, FONT_MENU, fs)
+            # Divider
+            p.fill_rect(bx + 4, by + title_h, box_w - 8, 1, edge)
+
+            # Adjust scroll
+            if selected < scroll:
+                scroll = selected
+            elif selected >= scroll + max_visible:
+                scroll = selected - max_visible + 1
+
+            # Items
+            visible_end = min(scroll + max_visible, len(items))
+            for draw_row, i in enumerate(range(scroll, visible_end)):
+                label, _ = items[i]
+                y = by + title_h + 8 + draw_row * row_h
+                color = sel_c if i == selected else norm_c
+                lw = p.ttf_width(label, FONT_MENU, fs)
+                p.draw_ttf(bx + (box_w - lw) // 2, y, label, color, FONT_MENU, fs)
+
+            self._draw_widgets()
+            p.flip()
+
+            btn = wait_any_button(p)
+            if btn & p.BTN_UP:
                 selected = (selected - 1) % len(items)
-            elif btn & self.pager.BTN_DOWN:
+            elif btn & p.BTN_DOWN:
                 selected = (selected + 1) % len(items)
-            elif btn & self.pager.BTN_A:
-                dev = items[selected][1]
-                if dev is None:
-                    return
-                self.config['gps_device'] = dev
-                save_config(self.config)
-                self._flash(f"Set: {os.path.basename(dev)}")
-                return
-            elif btn & self.pager.BTN_B:
-                return
+            elif btn & p.BTN_A:
+                _, value = items[selected]
+                if on_select:
+                    on_select(value)
+                return value
+            elif btn & p.BTN_POWER:
+                return None
+            elif btn & p.BTN_B:
+                return None
 
     def _restart_gpsd(self):
         """Restart gpsd with the currently configured device + baud."""
@@ -762,20 +897,114 @@ class SettingsUI:
             elif btn & self.pager.BTN_B:
                 return
 
+    def _stop_captive(self):
+        """Tear down a running captive portal attack from any context."""
+        try:
+            from captive import server as cap_server
+            from captive import dns_hijack
+            from captive import ap_control
+            cap_server.stop()
+            dns_hijack.disable()
+            ap_control.stop_ap()
+        except Exception:
+            pass
+
+    def _wifi_pineap_toggle(self):
+        """Enable/disable the PineAP/Karma capture interface.
+        Mutually exclusive with the hotspot and captive portal."""
+        currently = wifi_utils.get_pineap_state()
+        target = not currently
+        if target:
+            mode = wifi_utils.get_active_wifi_mode()
+            if mode == 'captive':
+                if not self._popup_menu(
+                        'Captive is on. Disable it?',
+                        [('No, cancel', False), ('YES, disable', True)]):
+                    return
+                self._stop_captive()
+            elif mode == 'hotspot':
+                if not self._popup_menu(
+                        'Hotspot is on. Disable it?',
+                        [('No, cancel', False), ('YES, disable', True)]):
+                    return
+                wifi_utils.set_hotspot(False)
+            choice = self._popup_menu(
+                'Enable PineAP capture?',
+                [('No, cancel', False), ('YES, enable', True)],
+            )
+            if not choice:
+                return
+            self._flash('Starting PineAP...', 0.4)
+            wifi_utils.set_pineap_capture(True)
+            self._flash('PineAP enabled')
+        else:
+            choice = self._popup_menu(
+                'Disable PineAP capture?',
+                [('No, keep on', False), ('YES, disable', True)],
+            )
+            if not choice:
+                return
+            self._flash('Stopping PineAP...', 0.3)
+            wifi_utils.set_pineap_capture(False)
+            self._flash('PineAP disabled')
+
+    def _wifi_fix_net(self):
+        """Restore wireless/network/firewall/dhcp from the baseline
+        snapshot and reload all services. One-button recovery if the
+        user breaks the network config."""
+        # Confirm via popup (destructive)
+        items = [('No, cancel', False), ('YES, reset network', True)]
+        choice = self._popup_menu('Reset network to defaults?', items)
+        if not choice:
+            return
+        self._flash('Resetting network...', 0.4)
+        ok, n, msg = wifi_utils.fix_net()
+        self._flash(msg if msg else ('Done' if ok else 'Failed'), 1.5)
+
     def _wifi_hotspot_toggle(self):
-        """Enable/disable the WiFi hotspot, applying the saved SSID + password."""
+        """Enable/disable the WiFi hotspot, with confirmation prompt."""
         enabled, cur_ssid, cur_key = wifi_utils.get_hotspot_state()
         target_enabled = not enabled
+
         if target_enabled:
+            # Mutual exclusion: offer to stop the conflicting mode
+            mode = wifi_utils.get_active_wifi_mode()
+            if mode == 'captive':
+                if not self._popup_menu(
+                        'Captive is on. Disable it?',
+                        [('No, cancel', False), ('YES, disable', True)]):
+                    return
+                self._stop_captive()
+            elif mode == 'pineap':
+                if not self._popup_menu(
+                        'PineAP is on. Disable it?',
+                        [('No, cancel', False), ('YES, disable', True)]):
+                    return
+                wifi_utils.set_pineap_capture(False)
+
             ssid = self.config.get('hotspot_ssid', '') or cur_ssid or 'pager'
             password = self.config.get('hotspot_password', '') or cur_key
             if not password or len(password) < 8:
                 self._flash('Set 8+ char password first')
                 return
+            # Confirm before enabling
+            choice = self._popup_menu(
+                f'Enable hotspot {ssid}?',
+                [('No, cancel', False), ('YES, enable', True)],
+            )
+            if not choice:
+                return
             self._flash('Starting hotspot...', 0.5)
             wifi_utils.set_hotspot(True, ssid=ssid, password=password)
             self._flash(f'Hotspot on: {ssid}')
         else:
+            # Confirm before disabling too
+            choice = self._popup_menu(
+                'Disable hotspot?',
+                [('No, keep on', False), ('YES, disable', True)],
+            )
+            if not choice:
+                return
             self._flash('Stopping hotspot...', 0.3)
             wifi_utils.set_hotspot(False)
             self._flash('Hotspot off')
@@ -821,6 +1050,10 @@ class SettingsUI:
             self._wifi_scan_connect()
         elif action == 'wifi_hotspot_toggle':
             self._wifi_hotspot_toggle()
+        elif action == 'wifi_pineap_toggle':
+            self._wifi_pineap_toggle()
+        elif action == 'wifi_fix_net':
+            self._wifi_fix_net()
         elif action == 'test_beep':
             if not self.config.get('sound_enabled', True):
                 self._flash('Sound is off')

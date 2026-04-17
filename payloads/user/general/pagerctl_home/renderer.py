@@ -105,7 +105,19 @@ class Renderer:
         if 'image_path' in layer:
             handle = self.image(layer['image_path'])
             if handle:
-                self.pager.draw_image(x, y, handle)
+                # Optional `w`/`h` fields scale the image — used by
+                # the launch dialog to shrink the Launch/Cancel
+                # button artwork so more room is left for the
+                # description text above them.
+                w = layer.get('w')
+                h = layer.get('h')
+                if w and h and hasattr(self.pager, 'draw_image_scaled'):
+                    try:
+                        self.pager.draw_image_scaled(x, y, int(w), int(h), handle)
+                    except Exception:
+                        self.pager.draw_image(x, y, handle)
+                else:
+                    self.pager.draw_image(x, y, handle)
 
         # Static text
         if 'text' in layer:

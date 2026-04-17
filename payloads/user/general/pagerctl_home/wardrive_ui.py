@@ -58,6 +58,14 @@ class WardriveUI:
         self.wigle_writer = WigleWriter(EXPORT_DIR)
         self.is_foreground = False  # set True while run() is on screen
 
+        # Dedicated background worker thread that consumes the scan
+        # queue and does the heavy DB/wigle work, so the main loop
+        # never blocks on wardrive processing.
+        self._bg_worker = None
+        self._bg_stop = threading.Event()
+        self._bg_new_aps = 0      # incremented by worker, drained by main loop
+        self._bg_lock = threading.Lock()
+
         # Theme-driven dashboard layout (reloaded each run() so JSON
         # edits take effect on re-entry)
         self._layout = None
@@ -105,22 +113,11 @@ class WardriveUI:
         needs_render = True
 
         while True:
-            # -- Cheap work: process scan results every iteration --
-            new_aps = 0
-            if self.scan_state == 'scanning':
-                new_aps = self._process_scan_results()
-                if new_aps > 0:
-                    try:
-                        self.db.correlate_open_bssids()
-                    except Exception:
-                        pass
-                    self._geiger_sound(new_aps)
-                    try:
-                        all_aps = self.db.get_all_aps()
-                        self.wigle_writer.append_aps(all_aps)
-                    except Exception:
-                        pass
-                    needs_render = True
+            # -- Pull new-AP count from the background worker --
+            new_aps = self._drain_bg_count() if self.scan_state == 'scanning' else 0
+            if new_aps > 0:
+                self._geiger_sound(new_aps)
+                needs_render = True
 
             # -- Throttled render: only redraw when something changed --
             now = time.time()
@@ -195,30 +192,15 @@ class WardriveUI:
         pager.clear_input_events()
 
     def poll_background(self, pager):
-        """Drain the scan queue while wardrive is in the background.
-
-        Called from pagerctl_home's main loop. If a scan is running and
-        new APs appeared since the last poll, plays a single click so
-        the user gets auditory feedback even when they're not on the
-        wardrive screen. Keeps the wigle CSV up to date in real time.
-        """
+        """Lightweight callback from the main loop while wardrive is
+        backgrounded. The actual scan processing runs in self._bg_loop
+        (background thread), so this just plays a click when the worker
+        reports new APs. Always returns instantly."""
         if self.is_foreground or self.scan_state != 'scanning':
             return
-        new_aps = self._process_scan_results()
-        if new_aps <= 0:
+        cnt = self._drain_bg_count()
+        if cnt <= 0:
             return
-        try:
-            self.db.correlate_open_bssids()
-        except Exception:
-            pass
-        try:
-            all_aps = self.db.get_all_aps()
-            self.wigle_writer.append_aps(all_aps)
-        except Exception:
-            pass
-        # One short click per batch — no sleep-based cascade that would
-        # block the main loop. Gated on the master sound toggle AND the
-        # wardrive clicks toggle.
         if (self.config.get('sound_enabled', True)
                 and self.config.get('geiger_sound', True)):
             try:
@@ -738,7 +720,7 @@ class WardriveUI:
         return f"{product} ({short})"
 
     def _scan_settings(self):
-        """Scan mode and bands."""
+        """Scan mode, bands, geiger clicks."""
         p = self.pager
         selected = 0
 
@@ -747,12 +729,14 @@ class WardriveUI:
             b24 = self.config.get('scan_2_4ghz', True)
             b5 = self.config.get('scan_5ghz', True)
             b6 = self.config.get('scan_6ghz', False)
+            clicks = self.config.get('geiger_sound', True)
 
             items = [
                 (f"Mode: {mode.title()}", 'cycle_mode'),
                 (f"2.4GHz: {'ON' if b24 else 'OFF'}", 'toggle_24'),
                 (f"5GHz: {'ON' if b5 else 'OFF'}", 'toggle_5'),
                 (f"6GHz: {'ON' if b6 else 'OFF'}", 'toggle_6'),
+                (f"Clicks: {'ON' if clicks else 'OFF'}", 'toggle_clicks'),
             ]
 
             if selected >= len(items):
@@ -775,6 +759,8 @@ class WardriveUI:
                     self.config['scan_5ghz'] = not b5
                 elif action == 'toggle_6':
                     self.config['scan_6ghz'] = not b6
+                elif action == 'toggle_clicks':
+                    self.config['geiger_sound'] = not clicks
                 save_config(self.config)
             elif button & p.BTN_B:
                 save_config(self.config)
@@ -993,8 +979,11 @@ class WardriveUI:
                 self.gps_state, self.stop_event)
             self.gps_reader.start()
 
+        self._start_bg_worker()
+
     def _stop_threads(self):
         self.stop_event.set()
+        self._stop_bg_worker()
         if self.scanner:
             self.scanner.join(timeout=3)
             self.scanner = None
@@ -1002,6 +991,72 @@ class WardriveUI:
             self.gps_reader.stop()
             self.gps_reader.join(timeout=3)
             self.gps_reader = None
+
+    def _start_bg_worker(self):
+        """Start the background scan-processing worker thread."""
+        if self._bg_worker and self._bg_worker.is_alive():
+            return
+        self._bg_stop.clear()
+        self._bg_worker = threading.Thread(target=self._bg_loop, daemon=True)
+        self._bg_worker.start()
+
+    def _stop_bg_worker(self):
+        self._bg_stop.set()
+        t = self._bg_worker
+        self._bg_worker = None
+        if t:
+            try:
+                t.join(timeout=2)
+            except Exception:
+                pass
+
+    def _bg_loop(self):
+        """Worker thread that drains scan_queue, upserts APs, and
+        periodically runs the heavy ops (correlate + wigle CSV
+        rewrite). Runs out-of-band so the main loop never blocks
+        on scan processing — fixes the 'power menu unresponsive'
+        bug where main thread would stall for seconds processing a
+        big batch of accumulated APs."""
+        last_correlate = 0.0
+        last_wigle = 0.0
+        while not self._bg_stop.is_set():
+            try:
+                if self.scan_state != 'scanning':
+                    time.sleep(0.5)
+                    continue
+                new_aps = self._process_scan_results()
+                if new_aps > 0:
+                    with self._bg_lock:
+                        self._bg_new_aps += new_aps
+                now = time.time()
+                # Correlate every 5 seconds (cleans up false-Open beacons)
+                if now - last_correlate > 5.0:
+                    try:
+                        self.db.correlate_open_bssids()
+                    except Exception:
+                        pass
+                    last_correlate = now
+                # Rewrite the wigle CSV at most every 3 seconds when
+                # there's been any new data — never per-frame.
+                if new_aps > 0 and now - last_wigle > 3.0:
+                    try:
+                        all_aps = self.db.get_all_aps()
+                        self.wigle_writer.append_aps(all_aps)
+                    except Exception:
+                        pass
+                    last_wigle = now
+            except Exception:
+                pass
+            time.sleep(0.2)
+
+    def _drain_bg_count(self):
+        """Atomically read + clear the new-APs counter the worker has
+        been incrementing. Used by the main loop / foreground render
+        to know when to play the geiger click."""
+        with self._bg_lock:
+            cnt = self._bg_new_aps
+            self._bg_new_aps = 0
+        return cnt
 
     def _process_scan_results(self):
         new_count = 0

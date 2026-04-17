@@ -116,6 +116,48 @@ const App = {
             el.classList.add('removing');
             setTimeout(() => el.remove(), 300);
         }, 3000);
+    },
+
+    confirm(msg) {
+        return new Promise(resolve => {
+            const modal = document.getElementById('confirm-modal');
+            if (!modal) return resolve(window.confirm(msg));
+            const msgEl = document.getElementById('confirm-message');
+            const yesBtn = document.getElementById('confirm-yes');
+            const noBtn = document.getElementById('confirm-no');
+            msgEl.textContent = msg;
+            modal.classList.remove('hidden');
+            const cleanup = result => {
+                modal.classList.add('hidden');
+                yesBtn.removeEventListener('click', onYes);
+                noBtn.removeEventListener('click', onNo);
+                resolve(result);
+            };
+            const onYes = () => cleanup(true);
+            const onNo = () => cleanup(false);
+            yesBtn.addEventListener('click', onYes);
+            noBtn.addEventListener('click', onNo);
+        });
+    },
+
+    fmtBytes(n) {
+        if (!n && n !== 0) return '-';
+        if (n < 1024) return n + ' B';
+        if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+        return (n / (1024 * 1024)).toFixed(1) + ' MB';
+    },
+
+    fmtTime(ts) {
+        if (!ts) return '-';
+        const d = new Date(ts * 1000);
+        return d.toLocaleString();
+    },
+
+    esc(s) {
+        if (s == null) return '';
+        return String(s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 };
 

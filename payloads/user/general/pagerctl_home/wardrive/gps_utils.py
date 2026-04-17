@@ -7,6 +7,7 @@ so the settings menu and the wardrive menu stay in sync.
 
 import glob
 import os
+import subprocess
 
 
 _EXCLUDE_KEYWORDS = [
@@ -54,6 +55,27 @@ def get_device_name(dev_path):
     product = get_device_product(dev_path)
     short = os.path.basename(dev_path)
     return f'{product} ({short})' if product else short
+
+
+def get_gpsd_baud(device=None):
+    """Return the baud rate currently in use on the GPS serial device,
+    as a string (e.g. '9600'). Returns '' if it can't be determined.
+
+    Tries `stty -F /dev/ttyXXX speed` first (works without gpsd).
+    """
+    if not device:
+        return ''
+    if not os.path.exists(device):
+        return ''
+    try:
+        r = subprocess.run(['stty', '-F', device, 'speed'],
+                            capture_output=True, text=True, timeout=2)
+        out = r.stdout.strip()
+        if out:
+            return out
+    except Exception:
+        pass
+    return ''
 
 
 def short_device_label(dev_path):

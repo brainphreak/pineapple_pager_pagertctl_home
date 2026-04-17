@@ -54,15 +54,15 @@
           "variable": "$_PAYLOAD_CATEGORIES"
         },
         {
-          "id": "PAGERGOTCHI",
+          "id": "CAPTIVE",
           "layers": [],
           "selected_layers": [
             { "image_path": "assets/dashboard/pushbutton-down.png", "x": 0, "y": 0 },
-            { "text": "PAGERGOTCHI", "x": 101, "y": -82, "text_size": "large", "text_color_palette": "lcd_text" }
+            { "text": "CAPTIVE PORTAL", "x": 101, "y": -82, "text_size": "large", "text_color_palette": "lcd_text" }
           ],
           "x": 5,
           "y": 143,
-          "target": "launch_pagergotchi"
+          "target": "captive_dashboard"
         }
       ]
     },

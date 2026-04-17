@@ -9,7 +9,8 @@ import json
 
 class MenuItem:
     """A selectable item within a screen page."""
-    __slots__ = ('id', 'x', 'y', 'layers', 'selected_layers', 'target', 'variable')
+    __slots__ = ('id', 'x', 'y', 'layers', 'selected_layers', 'target',
+                 'variable', 'animation', '_anim_frame')
 
     def __init__(self, data):
         self.id = data.get('id', '')
@@ -19,6 +20,8 @@ class MenuItem:
         self.selected_layers = data.get('selected_layers', [])
         self.target = data.get('target')
         self.variable = data.get('variable')
+        self.animation = data.get('animation') or []
+        self._anim_frame = 0
 
 
 class Screen:
@@ -40,10 +43,22 @@ class Screen:
         self.bg_color = bg.get('background_color')
         self.bg_layers = bg.get('layers', [])
 
-        # Parse pages -> list of MenuItem lists
+        # Parse pages -> list of MenuItem lists.
+        # Most Circuitry dashboards use `pages: [{menu_items: [...]}]`,
+        # but dialog components (launch_payload_dialog, confirmation_dialog,
+        # alert_*_dialog, etc.) put `menu_items` directly at the top level
+        # with no pages wrapper. Support both by falling back to a single
+        # synthetic page when `pages` is missing.
         self.pages = []
-        for page_data in config.get('pages', []):
-            self.pages.append([MenuItem(d) for d in page_data.get('menu_items', [])])
+        pages_cfg = config.get('pages')
+        if pages_cfg:
+            for page_data in pages_cfg:
+                self.pages.append(
+                    [MenuItem(d) for d in page_data.get('menu_items', [])])
+        else:
+            top_items = config.get('menu_items', [])
+            if top_items:
+                self.pages.append([MenuItem(d) for d in top_items])
 
         self.current_page = 0
         self.selected_index = 0
