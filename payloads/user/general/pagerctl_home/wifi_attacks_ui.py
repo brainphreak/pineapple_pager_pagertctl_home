@@ -343,6 +343,12 @@ class WifiAttacksUI:
                            'value_color': self.GREEN if dual else self.DIM,
                            'type': 'toggle',
                            'action': self._toggle_dual_radio})
+            rotate = c.get('wifi_attack_rotate', 1.0)
+            right.append({'label': 'Rotate',
+                           'value': f'{float(rotate):g}s',
+                           'value_color': self.WHITE,
+                           'type': 'cycle',
+                           'action': self._cycle_rotate})
         if mode == 'WPS':
             right.append({'label': 'Method', 'value': wps_method,
                            'value_color': self.WHITE,
@@ -679,6 +685,19 @@ class WifiAttacksUI:
             return
         cur = bool(self.config.get('wifi_attack_dual_radio', False))
         self.config['wifi_attack_dual_radio'] = not cur
+        save_config(self.config)
+
+    def _cycle_rotate(self):
+        options = ssid_spam.ROTATE_OPTIONS
+        try:
+            cur = float(self.config.get('wifi_attack_rotate', 1.0))
+        except (TypeError, ValueError):
+            cur = 1.0
+        try:
+            i = options.index(cur)
+        except ValueError:
+            i = options.index(1.0) if 1.0 in options else 0
+        self.config['wifi_attack_rotate'] = options[(i + 1) % len(options)]
         save_config(self.config)
 
     def _cycle_wps_method(self):

@@ -58,6 +58,12 @@ MAX_BSS = 1
 ROTATE_INTERVAL = 1.0
 MAC_ROTATE_EVERY = 10
 
+# Available rotation intervals (seconds) surfaced in the UI as the
+# `Rotate` cycle. Lower = more SSIDs per scan sweep but more wifi
+# reload churn; higher = less churn but fewer unique SSIDs visible
+# before the scanner's cache window closes.
+ROTATE_OPTIONS = [0.25, 0.5, 1.0, 2.0, 5.0]
+
 PRIMARY_RADIO = 'radio1'
 SECONDARY_RADIO = 'radio0'  # shared with wlan0cli — don't reconfigure
 NETWORK = 'lan'
@@ -289,7 +295,7 @@ def _count_up_bss():
     return ap_count
 
 
-def _rotate_loop(ssids, sections, numbered, stop_event):
+def _rotate_loop(ssids, sections, numbered, stop_event, interval=ROTATE_INTERVAL):
     """Two-tier rotation across one or more radios.
 
     Fast tier (every tick, ~1s): update each radio's AP SSID via
@@ -315,7 +321,7 @@ def _rotate_loop(ssids, sections, numbered, stop_event):
     ticks = 0
 
     while not stop_event.is_set():
-        stop_event.wait(ROTATE_INTERVAL)
+        stop_event.wait(interval)
         if stop_event.is_set():
             break
 
@@ -349,11 +355,59 @@ def _rotate_loop(ssids, sections, numbered, stop_event):
         ticks += 1
 
 
+def _cleanup_stale_state():
+    """If a prior run left UCI `pagerspam_*` sections or a stale
+    snapshot on disk, tear them down before we take a fresh snapshot.
+    Otherwise `_snapshot_wireless()` would capture the polluted
+    config as the "original" and stop() would restore a broken
+    state. Also covers the case where pagerctl_home was killed
+    mid-run so `resume_if_running()` never got to hook in."""
+    had_stale = False
+
+    # If a snapshot file exists, restore it (represents the real
+    # pre-run config); then nuke any pagerspam sections that survived.
+    if os.path.isfile(SNAPSHOT):
+        had_stale = True
+        try:
+            with open(SNAPSHOT, 'rb') as src, open(WIRELESS_CONF, 'wb') as dst:
+                dst.write(src.read())
+        except Exception:
+            pass
+        try:
+            os.remove(SNAPSHOT)
+        except Exception:
+            pass
+
+    # Belt-and-suspenders: scrub any pagerspam sections directly even
+    # if no snapshot existed (someone rebooted mid-run).
+    r = _uci('show', 'wireless', timeout=5)
+    if r and r.returncode == 0:
+        for line in (r.stdout or '').splitlines():
+            if f'.{SECTION_PREFIX}' not in line:
+                continue
+            key = line.split('=', 1)[0]
+            parts = key.split(f'.{SECTION_PREFIX}', 1)
+            if len(parts) != 2 or '.' in parts[1]:
+                continue
+            had_stale = True
+            _uci('delete', key)
+        _uci('commit', 'wireless')
+
+    if had_stale:
+        _wifi_reload()
+    return had_stale
+
+
 def start(config):
     global _stop_event, _rotate_thread
 
     if _state['running']:
         return True
+
+    # Clean up leftovers from a prior (crashed / force-killed) run
+    # before we snapshot — otherwise we'd snapshot the polluted state
+    # and stop() would restore that instead of the real original.
+    _cleanup_stale_state()
 
     pack = config.get('wifi_attack_pack', 'rickroll')
     ssids = _load_pack(pack)
@@ -375,6 +429,12 @@ def start(config):
     channel = config.get('wifi_attack_channel', '6')
     numbered = bool(config.get('wifi_attack_numbered', True))
     dual = bool(config.get('wifi_attack_dual_radio', False))
+    try:
+        interval = float(config.get('wifi_attack_rotate', ROTATE_INTERVAL))
+    except (TypeError, ValueError):
+        interval = ROTATE_INTERVAL
+    if interval <= 0:
+        interval = ROTATE_INTERVAL
 
     radios = [PRIMARY_RADIO]
     if dual:
@@ -428,7 +488,7 @@ def start(config):
     _stop_event = threading.Event()
     _rotate_thread = threading.Thread(
         target=_rotate_loop,
-        args=(ssids, sections, numbered, _stop_event),
+        args=(ssids, sections, numbered, _stop_event, interval),
         daemon=True,
     )
     _rotate_thread.start()
@@ -530,6 +590,12 @@ def resume_if_running():
         cfg = {}
     pack = cfg.get('wifi_attack_pack', 'rickroll')
     numbered = bool(cfg.get('wifi_attack_numbered', True))
+    try:
+        interval = float(cfg.get('wifi_attack_rotate', ROTATE_INTERVAL))
+    except (TypeError, ValueError):
+        interval = ROTATE_INTERVAL
+    if interval <= 0:
+        interval = ROTATE_INTERVAL
     ssids = _load_pack(pack)
     if not ssids:
         return False
@@ -545,7 +611,7 @@ def resume_if_running():
     _stop_event = threading.Event()
     _rotate_thread = threading.Thread(
         target=_rotate_loop,
-        args=(ssids, leftover_sections, numbered, _stop_event),
+        args=(ssids, leftover_sections, numbered, _stop_event, interval),
         daemon=True,
     )
     _rotate_thread.start()
