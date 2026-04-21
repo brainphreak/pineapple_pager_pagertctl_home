@@ -250,7 +250,15 @@ class WifiAttacksUI:
 
         c = self.config
         mode = c.get('wifi_attack_mode', MODES[0])
-        target = c.get('wifi_attack_target', '') or '(none)'
+        target_raw = c.get('wifi_attack_target')
+        if isinstance(target_raw, dict):
+            target = (target_raw.get('ssid')
+                      or target_raw.get('bssid', '')
+                      or '(set)')
+        elif target_raw:
+            target = str(target_raw)
+        else:
+            target = 'All'
         channel = c.get('wifi_attack_channel', 'auto')
         iface = c.get('wifi_attack_iface', 'wlan1mon')
         burst = c.get('wifi_attack_burst', 64)
@@ -497,9 +505,116 @@ class WifiAttacksUI:
         save_config(self.config)
 
     def _pick_target(self):
-        # TODO: wire to wifi_utils.scan_networks() picker, same pattern
-        # as captive_ui._clone_nearby_ssid.
-        pass
+        """Scan nearby APs and let the user pick one as the attack
+        target. Selection is stored in settings as an
+        `wifi_attack_target` dict: {ssid, bssid, channel}. Picking
+        'All' / clearing sets it to None — backend falls back to
+        promiscuous capture on all BSSIDs."""
+        if self.running:
+            pager_dialogs.popup_menu(
+                self.pager, 'Stop current attack first',
+                [('OK', 'ok')], bg_drawer=self._bg)
+            return
+        self._flash_msg('Scanning...')
+        networks = self._scan_aps_with_bssid()
+
+        items = [('All (promiscuous)', '__all__')]
+        for n in (networks or [])[:20]:
+            ssid = (n.get('ssid') or '(hidden)')[:18]
+            bssid = n.get('bssid', '')
+            sig = n.get('signal', -100)
+            ch = n.get('channel', '?')
+            enc = n.get('enc', '?')
+            label = f'{ssid} {sig}dBm ch{ch} {enc}'
+            items.append((label[:54], {
+                'ssid': n.get('ssid', ''),
+                'bssid': bssid,
+                'channel': ch,
+                'enc': enc,
+            }))
+        if len(items) == 1:
+            items.append(('(no APs found)', None))
+        items.append(('Cancel', None))
+
+        picked = pager_dialogs.popup_menu(
+            self.pager, 'Target AP', items, bg_drawer=self._bg)
+        if picked == '__all__':
+            self.config['wifi_attack_target'] = None
+            save_config(self.config)
+            return
+        if picked is None or not isinstance(picked, dict):
+            return
+        self.config['wifi_attack_target'] = picked
+        save_config(self.config)
+
+    def _scan_aps_with_bssid(self):
+        """Return list of {ssid, bssid, signal, channel, enc} dicts
+        from `iw dev wlan0cli scan`. Preserves BSSID + channel that
+        wifi_utils.scan_networks() discards."""
+        import subprocess as _sp
+        try:
+            r = _sp.run(['iw', 'dev', 'wlan0cli', 'scan'],
+                         capture_output=True, text=True, timeout=12)
+        except Exception:
+            return []
+        out = []
+        cur = None
+        for line in (r.stdout or '').split('\n'):
+            s = line.strip()
+            if line.startswith('BSS '):
+                if cur and cur.get('bssid'):
+                    out.append(cur)
+                # Parse BSSID from "BSS aa:bb:cc:dd:ee:ff(on ..."
+                bssid = ''
+                try:
+                    bssid = line.split()[1].split('(')[0]
+                except Exception:
+                    pass
+                cur = {'ssid': '', 'bssid': bssid,
+                       'signal': -100, 'channel': '?', 'enc': 'open'}
+            elif cur is None:
+                continue
+            elif s.startswith('signal:'):
+                try:
+                    cur['signal'] = int(float(s.split()[1]))
+                except Exception:
+                    pass
+            elif s.startswith('SSID:'):
+                cur['ssid'] = s.split(':', 1)[1].strip()
+            elif s.startswith('DS Parameter set: channel '):
+                try:
+                    cur['channel'] = int(s.split()[-1])
+                except Exception:
+                    pass
+            elif s.startswith('freq:'):
+                # 5GHz APs report freq without a DS parameter set.
+                try:
+                    f = int(s.split()[1])
+                    if 2412 <= f <= 2484:
+                        cur['channel'] = (f - 2407) // 5 if f != 2484 else 14
+                    elif f >= 5000:
+                        cur['channel'] = (f - 5000) // 5
+                except Exception:
+                    pass
+            elif 'WPA' in s and 'version' in s.lower():
+                cur['enc'] = 'wpa'
+            elif 'RSN' in s and 'version' in s.lower():
+                cur['enc'] = 'wpa2'
+        if cur and cur.get('bssid'):
+            out.append(cur)
+        out.sort(key=lambda x: x.get('signal', -100), reverse=True)
+        return out
+
+    def _flash_msg(self, msg, duration=0.3):
+        """Quick centered flash for 'Scanning...' etc."""
+        p = self.pager
+        self._bg()
+        fs = theme_utils.get_size('medium')
+        tw = p.ttf_width(msg, FONT_MENU, fs)
+        p.draw_ttf((SCREEN_W - tw) // 2, SCREEN_H // 2 - fs // 2, msg,
+                   self.YELLOW, FONT_MENU, fs)
+        p.flip()
+        time.sleep(duration)
 
     def _cycle_burst(self):
         cur = int(self.config.get('wifi_attack_burst', 64))

