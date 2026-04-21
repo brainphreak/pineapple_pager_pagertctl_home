@@ -1,0 +1,16 @@
+{
+  "screen_name": "wardrive_message_box",
+  "box": {
+    "height": 50,
+    "min_width": 200,
+    "padding_x": 40,
+    "fill": "modal_bg",
+    "border_color": "info_accent",
+    "border_width": 1
+  },
+  "text": {
+    "font": "menu",
+    "font_size": "medium",
+    "color": "white"
+  }
+}

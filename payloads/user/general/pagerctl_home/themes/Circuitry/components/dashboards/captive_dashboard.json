@@ -1,0 +1,19 @@
+{
+  "screen_name": "captive_dashboard",
+  "grid": {
+    "col_x": [25, 240],
+    "col_widths": [200, 240],
+    "row_y_start": 30,
+    "row_height": 24,
+    "label_gap": 6,
+    "counter_erase_width": 80
+  },
+  "text": {
+    "font": "menu",
+    "font_size": 17,
+    "label_selected": "warning_accent",
+    "label_unselected": "dim",
+    "value_default": "white"
+  },
+  "bg_sample": { "r": 15, "g": 28, "b": 56 }
+}

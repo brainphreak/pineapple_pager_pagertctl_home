@@ -31,38 +31,37 @@
       "page_index": 0,
       "menu_items": [
         {
-          "id": "LOKI",
+          "id": "WIFI_ATTACKS",
           "layers": [],
           "selected_layers": [
             { "image_path": "assets/dashboard/pushbutton-down.png", "x": 0, "y": 0 },
-            { "text": "LOKI", "x": 101, "y": 17, "text_size": "large", "text_color_palette": "lcd_text" }
+            { "text": "WIFI ATTACKS", "x": 101, "y": 17, "text_size": "large", "text_color_palette": "lcd_text" }
           ],
           "x": 5,
           "y": 44,
-          "target": "launch_loki"
-        },
-        {
-          "id": "PAYLOADS",
-          "layers": [],
-          "selected_layers": [
-            { "image_path": "assets/dashboard/pushbutton-down.png", "x": 0, "y": 0 },
-            { "text": "PAYLOADS", "x": 101, "y": -32, "text_size": "large", "text_color_palette": "lcd_text" }
-          ],
-          "x": 5,
-          "y": 93,
-          "target": "payloads_dashboard",
-          "variable": "$_PAYLOAD_CATEGORIES"
+          "target": "wifi_attacks_dashboard"
         },
         {
           "id": "CAPTIVE",
           "layers": [],
           "selected_layers": [
             { "image_path": "assets/dashboard/pushbutton-down.png", "x": 0, "y": 0 },
-            { "text": "CAPTIVE PORTAL", "x": 101, "y": -82, "text_size": "large", "text_color_palette": "lcd_text" }
+            { "text": "CAPTIVE PORTAL", "x": 101, "y": -32, "text_size": "large", "text_color_palette": "lcd_text" }
+          ],
+          "x": 5,
+          "y": 93,
+          "target": "captive_dashboard"
+        },
+        {
+          "id": "WARDRIVE",
+          "layers": [],
+          "selected_layers": [
+            { "image_path": "assets/dashboard/pushbutton-down.png", "x": 0, "y": 0 },
+            { "text": "WARDRIVE", "x": 101, "y": -82, "text_size": "large", "text_color_palette": "lcd_text" }
           ],
           "x": 5,
           "y": 143,
-          "target": "captive_dashboard"
+          "target": "wardrive_dashboard"
         }
       ]
     },
@@ -70,26 +69,27 @@
       "page_index": 1,
       "menu_items": [
         {
+          "id": "PAYLOADS",
+          "layers": [],
+          "selected_layers": [
+            { "image_path": "assets/dashboard/pushbutton-down-right.png", "x": 0, "y": 0 },
+            { "text": "PAYLOADS", "x": -331, "y": 17, "text_size": "large", "text_color_palette": "lcd_text" }
+          ],
+          "x": 437,
+          "y": 44,
+          "target": "payloads_dashboard",
+          "variable": "$_PAYLOAD_CATEGORIES"
+        },
+        {
           "id": "SYSINFO",
           "layers": [],
           "selected_layers": [
             { "image_path": "assets/dashboard/pushbutton-down-right.png", "x": 0, "y": 0 },
-            { "text": "SYSINFO", "x": -331, "y": 17, "text_size": "large", "text_color_palette": "lcd_text" }
-          ],
-          "x": 437,
-          "y": 44,
-          "target": "sysinfo_dashboard"
-        },
-        {
-          "id": "WARDRIVING",
-          "layers": [],
-          "selected_layers": [
-            { "image_path": "assets/dashboard/pushbutton-down-right.png", "x": 0, "y": 0 },
-            { "text": "WARDRIVE", "x": -331, "y": -32, "text_size": "large", "text_color_palette": "lcd_text" }
+            { "text": "SYSINFO", "x": -331, "y": -32, "text_size": "large", "text_color_palette": "lcd_text" }
           ],
           "x": 437,
           "y": 93,
-          "target": "wardrive_dashboard"
+          "target": "sysinfo_dashboard"
         },
         {
           "id": "SETTINGS",

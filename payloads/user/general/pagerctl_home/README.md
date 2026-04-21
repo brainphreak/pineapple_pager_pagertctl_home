@@ -15,7 +15,7 @@ UI can be re-skinned without touching Python.
 
 ## Screens
 
-- **Wargames dashboard** — animated home screen with battery, time,
+- **Main dashboard** — animated home screen with battery, time,
   WiFi, GPS, Bluetooth status widgets.
 - **Payloads browser** — scans `/mmc/root/payloads/user/` and lists
   every installed payload with a `pagerctl.sh`. Classic
@@ -28,6 +28,29 @@ UI can be re-skinned without touching Python.
 - **Captive portal dashboard** — two-column grid for captive portal
   attacks (AP, DNS hijack, cred captures, …) with live counter
   updates.
+- **WiFi Attacks dashboard** — **WORK IN PROGRESS.** Captive-style
+  grid hosting a growing set of WiFi offensive tools. Mode cell
+  selects the attack; other cells configure it and show live
+  counters. Current status per mode:
+    - **SSID Spam** — partial. Hardware-limited by the pager's mt76
+      driver to 1 BSSID per radio, so the classic rickroll-flood
+      where 20+ APs appear at once isn't possible; instead one AP
+      rotates SSIDs and occasionally flips BSSID to introduce new
+      entries into scanner caches. Working but less dense than a
+      stock-beacon-flood tool would be on injection-capable
+      hardware. Dual-radio mode doubles density at the cost of
+      temporarily dropping your WiFi client connection.
+    - **Handshake Capture**, **Probe Monitor**, **Scan** — in
+      progress, not wired up yet. The monitor-mode RX path they rely
+      on works fine (proven by Wardrive), so these will land.
+    - **Deauth**, **Karma**, **WPS Pixie-Dust** — **removed from
+      the menu** because they require monitor-mode frame injection,
+      which the mt76 driver on this hardware blocks silently
+      (confirmed with 0 TX packets on test sends of both beacon
+      and deauth frames). They'll come back if we find a driver
+      workaround or ship on hardware with working injection.
+  The dashboard shows a visible "(WIP Under Development)" banner on
+  every mode until the backends are all functional.
 - **System info** — live hardware + firmware dashboard.
 - **Settings** — JSON-driven settings schema with toggles, cycles,
   actions, and themed on-screen keyboard for text input.

@@ -21,6 +21,24 @@ import duckyctl
 PAYLOADS_ROOT = '/mmc/root/payloads/user'
 
 
+def _show_classic_enabled():
+    """Check the shared settings for show_classic_payloads. Defaults
+    off — classic payloads are hidden until the user opts in via
+    Settings → General → Show Classic Payloads. Read fresh each call
+    because scan_categories is infrequent enough that caching isn't
+    worth the invalidation complexity when the toggle flips."""
+    try:
+        from wardrive.config import load_config
+        return bool(load_config().get('show_classic_payloads', False))
+    except Exception:
+        return False
+
+# Payloads that would fight us for the display if launched from the
+# payloads screen — pagerctl_home itself, and the bootloader which
+# is already the process that launched us.
+HIDDEN_PAYLOADS = frozenset({'pagerctl_home', 'pagerctl_bootloader'})
+
+
 class PayloadInfo:
     """Parsed metadata from a payload.sh header."""
     __slots__ = ('title', 'author', 'description', 'version',
@@ -88,12 +106,17 @@ def scan_categories():
         if not os.path.isdir(cat_path):
             continue
         payloads = []
+        show_classic = _show_classic_enabled()
         for entry in sorted(os.listdir(cat_path)):
+            if entry in HIDDEN_PAYLOADS:
+                continue
             entry_path = os.path.join(cat_path, entry)
             if not os.path.isdir(entry_path):
                 continue
             info = _parse(entry_path)
             if info:
+                if not show_classic and not info.is_pagerctl:
+                    continue
                 payloads.append(info)
         if payloads:
             display = cat_name.replace('_', ' ').title()

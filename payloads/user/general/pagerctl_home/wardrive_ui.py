@@ -26,6 +26,46 @@ from wardrive.gps_module import GpsReader, GpsState
 from wardrive.wigle_export import WigleWriter
 from wardrive.web_server import start_web_ui, stop_web_ui, wait_any_button, drain_virt_button
 
+import theme_utils
+
+
+_SUBMENU_CFG = None
+_MSGBOX_CFG = None
+
+
+def _wardrive_submenu_cfg():
+    global _SUBMENU_CFG
+    if _SUBMENU_CFG is None:
+        td = os.environ.get('PAGERCTL_THEME',
+            os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         'themes', 'Circuitry'))
+        try:
+            with open(os.path.join(td, 'components/dialogs/wardrive_submenu.json')) as f:
+                _SUBMENU_CFG = json.load(f)
+        except Exception:
+            _SUBMENU_CFG = {}
+    return _SUBMENU_CFG
+
+
+def _wardrive_msgbox_cfg():
+    global _MSGBOX_CFG
+    if _MSGBOX_CFG is None:
+        td = os.environ.get('PAGERCTL_THEME',
+            os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         'themes', 'Circuitry'))
+        try:
+            with open(os.path.join(td, 'components/dialogs/wardrive_message_box.json')) as f:
+                _MSGBOX_CFG = json.load(f)
+        except Exception:
+            _MSGBOX_CFG = {}
+    return _MSGBOX_CFG
+
+
+def _size_or_px(v, default='medium'):
+    if isinstance(v, (int, float)):
+        return int(v)
+    return theme_utils.get_size(v or default)
+
 
 class WardriveUI:
     """Wardrive dashboard with integrated scan + settings menu.
@@ -89,18 +129,19 @@ class WardriveUI:
         self._load_layout()
 
         # Fallback colors for the menu/popup code that still uses them
-        self.WHITE = pager.rgb(255, 255, 255)
-        self.GREEN = pager.rgb(0, 255, 0)
-        self.CYAN = pager.rgb(100, 200, 255)
-        self.YELLOW = pager.rgb(255, 220, 50)
-        self.RED = pager.rgb(255, 60, 60)
-        self.DIM = pager.rgb(120, 120, 120)
-        self.ORANGE = pager.rgb(255, 160, 40)
+        self.WHITE = theme_utils.get_color(pager, 'white')
+        self.GREEN = theme_utils.get_color(pager, 'green')
+        self.CYAN = theme_utils.get_color(pager, 'info_accent')
+        self.YELLOW = theme_utils.get_color(pager, 'warning_accent')
+        self.RED = theme_utils.get_color(pager, 'red')
+        self.DIM = theme_utils.get_color(pager, 'dim')
+        self.ORANGE = theme_utils.get_color(pager, 'orange')
 
         # Load background from the layout's bg_image path (theme-relative)
         self.bg_handle = None
         if self._layout and 'bg_image' in self._layout:
-            theme_dir = os.path.join(os.path.dirname(__file__), 'themes', 'Circuitry')
+            theme_dir = os.environ.get('PAGERCTL_THEME',
+                os.path.join(os.path.dirname(__file__), 'themes', 'Circuitry'))
             bg_path = os.path.join(theme_dir, self._layout['bg_image'])
             if os.path.isfile(bg_path):
                 self.bg_handle = pager.load_image(bg_path)
@@ -217,7 +258,8 @@ class WardriveUI:
 
     def _load_layout(self):
         """Load (or hot-reload) wardrive_dashboard.json from the theme."""
-        theme_dir = os.path.join(os.path.dirname(__file__), 'themes', 'Circuitry')
+        theme_dir = os.environ.get('PAGERCTL_THEME',
+            os.path.join(os.path.dirname(__file__), 'themes', 'Circuitry'))
         path = os.path.join(theme_dir, self.LAYOUT_REL)
         try:
             mtime = os.path.getmtime(path)
@@ -387,6 +429,18 @@ class WardriveUI:
                 else:
                     p.draw_ttf(x, y, val, value_color, font, fs)
 
+        # Status-bar widgets — opt-in via wardrive_dashboard.json's
+        # top-level `status_bar` key, same convention as every other
+        # dashboard. Omit or null to hide (current default).
+        if (getattr(self, 'engine', None)
+                and self._layout
+                and self._layout.get('status_bar')):
+            for w in self.engine.widgets:
+                try:
+                    w.render(p, self.engine.renderer)
+                except Exception:
+                    pass
+
         p.flip()
 
     def _lv(self, lx, vx, y, label, value, fs, lc, vc):
@@ -424,19 +478,8 @@ class WardriveUI:
             else:
                 p.clear(0)
 
-            # Title
-            title = "Wardrive"
-            tw = p.ttf_width(title, FONT_TITLE, 28)
-            p.draw_ttf((SCREEN_W - tw) // 2, 20, title, self.CYAN, FONT_TITLE, 28)
-
-            # Menu items
-            for i, (label, _) in enumerate(items):
-                y = 58 + i * 22
-                color = self.GREEN if i == selected else self.WHITE
-                tw = p.ttf_width(label, FONT_MENU, 18)
-                p.draw_ttf((SCREEN_W - tw) // 2, y, label, color, FONT_MENU, 18)
-
-            p.flip()
+            self._draw_submenu("Wardrive", items, selected)
+            # _draw_submenu already flips.
 
             button = wait_any_button(p)
             if button & p.BTN_UP:
@@ -887,44 +930,81 @@ class WardriveUI:
         self._show_message(f"Uploaded {ok_count}/{len(files)}")
 
     def _show_message(self, msg, duration=1.2):
-        """Flash a centered message box over the current screen."""
+        """Flash a centered message box over the current screen.
+        Geometry, colors, and text style come from
+        components/dialogs/wardrive_message_box.json."""
         p = self.pager
         if self.bg_handle:
             p.draw_image(0, 0, self.bg_handle)
         else:
             p.clear(0)
-        tw = p.ttf_width(msg, FONT_MENU, 18)
-        box_w = max(tw + 40, 200)
-        box_h = 50
+
+        cfg = _wardrive_msgbox_cfg()
+        box = cfg.get('box') or {}
+        tcfg = cfg.get('text') or {}
+
+        font = FONT_TITLE if tcfg.get('font') == 'title' else FONT_MENU
+        fs = _size_or_px(tcfg.get('font_size', 'medium'), 'medium')
+        txt_c = theme_utils.get_color(p, tcfg.get('color', 'white'))
+
+        pad_x = int(box.get('padding_x', 40))
+        min_w = int(box.get('min_width', 200))
+        box_h = int(box.get('height', 50))
+        bw = int(box.get('border_width', 1))
+        fill = theme_utils.get_color(p, box.get('fill', 'modal_bg'))
+        border = theme_utils.get_color(p, box.get('border_color', 'info_accent'))
+
+        tw = p.ttf_width(msg, font, fs)
+        box_w = max(tw + pad_x, min_w)
         bx = (SCREEN_W - box_w) // 2
         by = (SCREEN_H - box_h) // 2
-        p.fill_rect(bx, by, box_w, box_h, p.rgb(0, 0, 0))
-        # Border (4 thin rects, since pagerctl has no draw_rect)
-        p.fill_rect(bx, by, box_w, 1, self.CYAN)
-        p.fill_rect(bx, by + box_h - 1, box_w, 1, self.CYAN)
-        p.fill_rect(bx, by, 1, box_h, self.CYAN)
-        p.fill_rect(bx + box_w - 1, by, 1, box_h, self.CYAN)
-        p.draw_ttf(bx + (box_w - tw) // 2, by + (box_h - 18) // 2, msg,
-                   self.WHITE, FONT_MENU, 18)
+
+        p.fill_rect(bx, by, box_w, box_h, fill)
+        p.fill_rect(bx, by, box_w, bw, border)
+        p.fill_rect(bx, by + box_h - bw, box_w, bw, border)
+        p.fill_rect(bx, by, bw, box_h, border)
+        p.fill_rect(bx + box_w - bw, by, bw, box_h, border)
+        p.draw_ttf(bx + (box_w - tw) // 2, by + (box_h - fs) // 2, msg,
+                   txt_c, font, fs)
         p.flip()
         time.sleep(duration)
 
     def _draw_submenu(self, title, items, selected):
-        """Draw a settings submenu."""
+        """Draw a settings submenu. Layout, fonts, and colors come
+        from components/dialogs/wardrive_submenu.json — themes
+        override via that file."""
         p = self.pager
         if self.bg_handle:
             p.draw_image(0, 0, self.bg_handle)
         else:
             p.clear(0)
 
-        tw = p.ttf_width(title, FONT_TITLE, 28)
-        p.draw_ttf((SCREEN_W - tw) // 2, 20, title, self.CYAN, FONT_TITLE, 28)
+        cfg = _wardrive_submenu_cfg()
+        tcfg = cfg.get('title') or {}
+        icfg = cfg.get('items') or {}
+
+        title_font = FONT_TITLE if tcfg.get('font') == 'title' else FONT_MENU
+        title_fs = _size_or_px(tcfg.get('font_size', 28), 'large')
+        title_y = int(tcfg.get('y', 20))
+        title_c = theme_utils.get_color(p, tcfg.get('color', 'info_accent'))
+
+        item_font = FONT_TITLE if icfg.get('font') == 'title' else FONT_MENU
+        item_fs = _size_or_px(icfg.get('font_size', 'medium'), 'medium')
+        start_y = int(icfg.get('start_y', 58))
+        row_h = int(icfg.get('row_height', 22))
+        sel_c = theme_utils.get_color(p, icfg.get('color_selected', 'green'))
+        norm_c = theme_utils.get_color(p, icfg.get('color_unselected', 'white'))
+
+        tw = p.ttf_width(title, title_font, title_fs)
+        p.draw_ttf((SCREEN_W - tw) // 2, title_y, title, title_c,
+                   title_font, title_fs)
 
         for i, (label, _) in enumerate(items):
-            y = 58 + i * 22
-            color = self.GREEN if i == selected else self.WHITE
-            tw = p.ttf_width(label, FONT_MENU, 18)
-            p.draw_ttf((SCREEN_W - tw) // 2, y, label, color, FONT_MENU, 18)
+            y = start_y + i * row_h
+            color = sel_c if i == selected else norm_c
+            tw = p.ttf_width(label, item_font, item_fs)
+            p.draw_ttf((SCREEN_W - tw) // 2, y, label, color,
+                       item_font, item_fs)
 
         p.flip()
 

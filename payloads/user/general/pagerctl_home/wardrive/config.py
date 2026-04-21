@@ -46,6 +46,7 @@ DEFAULTS = {
     'screen_timeout': 60,  # seconds, 0 = never
     'web_server': False,
     'web_port': 1337,
+    'show_classic_payloads': False,
 }
 
 

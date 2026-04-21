@@ -1,0 +1,37 @@
+{
+  "screen_name": "simple_modal",
+  "windowed_canvas": true,
+  "box": {
+    "w": 360,
+    "h": 140,
+    "fill": "navy",
+    "border_color": "warning_accent",
+    "border_width": 3
+  },
+  "title": {
+    "x_offset": 12,
+    "y_offset": 10,
+    "font": "title",
+    "font_size": 20,
+    "color": "warning_accent",
+    "max_chars": 32
+  },
+  "body": {
+    "x_offset": 12,
+    "y_offset": 40,
+    "font": "menu",
+    "font_size": 16,
+    "color": "modal_body",
+    "max_chars": 40,
+    "line_height": 20,
+    "bottom_pad": 30
+  },
+  "footer": {
+    "text": "Press any key",
+    "x_offset": 12,
+    "y_from_bottom": 22,
+    "font": "menu",
+    "font_size": 12,
+    "color": "warning_accent"
+  }
+}

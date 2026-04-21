@@ -26,6 +26,24 @@ from captive import captures
 from captive import intercept
 
 import pager_dialogs
+import theme_utils
+
+
+_CAPTIVE_CFG = None
+
+
+def _captive_dashboard_cfg():
+    global _CAPTIVE_CFG
+    if _CAPTIVE_CFG is None:
+        td = os.environ.get('PAGERCTL_THEME',
+            os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         'themes', 'Circuitry'))
+        try:
+            with open(os.path.join(td, 'components/dashboards/captive_dashboard.json')) as f:
+                _CAPTIVE_CFG = json.load(f)
+        except Exception:
+            _CAPTIVE_CFG = {}
+    return _CAPTIVE_CFG
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -96,14 +114,17 @@ class CaptiveUI:
             threading.Thread(target=self._resume_worker, daemon=True).start()
 
         # Colors
-        self.WHITE = pager.rgb(255, 255, 255)
-        self.GREEN = pager.rgb(0, 255, 0)
-        self.RED = pager.rgb(255, 60, 60)
-        self.YELLOW = pager.rgb(255, 220, 50)
-        self.CYAN = pager.rgb(100, 200, 255)
-        self.DIM = pager.rgb(120, 120, 120)
-        self.ORANGE = pager.rgb(255, 160, 40)
-        self.BG_SEL = pager.rgb(40, 40, 40)
+        self.WHITE = theme_utils.get_color(pager, 'white')
+        self.GREEN = theme_utils.get_color(pager, 'green')
+        self.RED = theme_utils.get_color(pager, 'red')
+        self.YELLOW = theme_utils.get_color(pager, 'warning_accent')
+        self.CYAN = theme_utils.get_color(pager, 'info_accent')
+        self.DIM = theme_utils.get_color(pager, 'dim')
+        self.ORANGE = theme_utils.get_color(pager, 'orange')
+        self.BG_SEL = theme_utils.get_color(pager, 'selection_bg')
+
+        # Pull grid / text / bg-sample from captive_dashboard.json
+        self._apply_dashboard_cfg()
 
         if not self.bg_handle:
             bg = os.path.join(HERE, 'themes', 'Circuitry', 'assets',
@@ -270,13 +291,53 @@ class CaptiveUI:
 
     # -- Render -------------------------------------------------------
 
-    # Layout constants used by both full and incremental rendering.
+    # Default layout constants — overridden per-instance from
+    # components/dashboards/captive_dashboard.json in __init__ so a
+    # theme can move/resize the grid without any Python edits.
     _COL_WIDTHS = (200, 240)
     _COL_X = (25, 240)
     _ROW_Y_START = 30
     _ROW_H = 24
     _FONT_SIZE = 17
     _LABEL_GAP = 6
+
+    def _apply_dashboard_cfg(self):
+        """Pull grid + text config from captive_dashboard.json and
+        store on self. Preserves the class-level defaults when the
+        JSON is missing or truncated."""
+        cfg = _captive_dashboard_cfg()
+        grid = cfg.get('grid') or {}
+        text = cfg.get('text') or {}
+        bg = cfg.get('bg_sample') or {}
+
+        col_x = grid.get('col_x')
+        if isinstance(col_x, list) and len(col_x) >= 1:
+            self._COL_X = tuple(int(v) for v in col_x)
+        col_w = grid.get('col_widths')
+        if isinstance(col_w, list) and len(col_w) >= 1:
+            self._COL_WIDTHS = tuple(int(v) for v in col_w)
+        self._ROW_Y_START = int(grid.get('row_y_start', self._ROW_Y_START))
+        self._ROW_H = int(grid.get('row_height', self._ROW_H))
+        self._LABEL_GAP = int(grid.get('label_gap', self._LABEL_GAP))
+        self._COUNTER_ERASE_W = int(grid.get('counter_erase_width', 80))
+
+        fs = text.get('font_size', self._FONT_SIZE)
+        if isinstance(fs, (int, float)):
+            self._FONT_SIZE = int(fs)
+        else:
+            self._FONT_SIZE = theme_utils.get_size(fs or 'medium')
+
+        p = self.pager
+        self._LABEL_SEL_C = theme_utils.get_color(
+            p, text.get('label_selected', 'warning_accent'))
+        self._LABEL_UNSEL_C = theme_utils.get_color(
+            p, text.get('label_unselected', 'dim'))
+        self._VALUE_DEFAULT_C = theme_utils.get_color(
+            p, text.get('value_default', 'white'))
+
+        self._BG_FILL = (int(bg.get('r', 15)),
+                         int(bg.get('g', 28)),
+                         int(bg.get('b', 56)))
 
     def _render(self, full=True):
         p = self.pager
@@ -291,7 +352,11 @@ class CaptiveUI:
         for col, row, item in items:
             self._draw_cell(col, row, item)
 
-        if self.engine:
+        # Status-bar widgets are opt-in via the component JSON's
+        # `status_bar` key (same convention the engine uses for every
+        # other screen). Omit or set to null in captive_dashboard.json
+        # to hide the battery/clock overlay.
+        if self.engine and _captive_dashboard_cfg().get('status_bar'):
             for w in self.engine.widgets:
                 try:
                     w.render(p, self.engine.renderer)
@@ -301,10 +366,10 @@ class CaptiveUI:
         self._last_sel = (self.sel_col, self.sel_row)
         p.flip()
 
-    # Approximate bg color sampled from the dark-blue terminal area
-    # of alert_dialog_bg_term_blue.png. Used to "erase" small regions
-    # (counter values) without re-blitting the whole image.
+    # Default bg-sample used if captive_dashboard.json doesn't supply
+    # one. Overwritten per-instance by _apply_dashboard_cfg.
     _BG_FILL = (15, 28, 56)
+    _COUNTER_ERASE_W = 80
 
     def _draw_cell(self, col, row, item):
         """Draw a single grid cell. Selection is indicated by label
@@ -364,7 +429,7 @@ class CaptiveUI:
             value_x = x + lw + self._LABEL_GAP
             # Erase the old value area (small rect just covering the
             # number) then draw the new value.
-            p.fill_rect(value_x, y - 2, 80, self._ROW_H - 2, bg_color)
+            p.fill_rect(value_x, y - 2, self._COUNTER_ERASE_W, self._ROW_H - 2, bg_color)
             value_color = item.get('value_color', self.WHITE)
             p.draw_ttf(value_x, y, new_val, value_color,
                        FONT_MENU, self._FONT_SIZE)
@@ -615,11 +680,14 @@ class CaptiveUI:
             self._flash('no templates found', 1.0)
             return
         current = self.config.get('captive_portal_template', 'default')
-        items = [
-            (f'{"→ " if n == current else "  "}{n}', n) for n in names
-        ] + [('Cancel', None)]
+        items = [(n, n) for n in names] + [('Cancel', None)]
+        try:
+            initial = names.index(current)
+        except ValueError:
+            initial = 0
         picked = pager_dialogs.popup_menu(
-            self.pager, 'Portal Template', items, bg_drawer=self._bg)
+            self.pager, 'Portal Template', items,
+            bg_drawer=self._bg, initial_selected=initial)
         if picked:
             self.config['captive_portal_template'] = picked
             save_config(self.config)
@@ -659,7 +727,7 @@ class CaptiveUI:
         box_h = 50
         bx = (SCREEN_W - box_w) // 2
         by = (SCREEN_H - box_h) // 2
-        p.fill_rect(bx, by, box_w, box_h, p.rgb(0, 0, 0))
+        p.fill_rect(bx, by, box_w, box_h, theme_utils.get_color(p, 'modal_bg'))
         edge = self.CYAN
         p.fill_rect(bx, by, box_w, 1, edge)
         p.fill_rect(bx, by + box_h - 1, box_w, 1, edge)
@@ -722,6 +790,18 @@ class CaptiveUI:
             if not ok:
                 return
             wifi_utils.set_pineap_capture(False)
+        elif mode == 'wifi_attacks':
+            ok = pager_dialogs.popup_menu(
+                self.pager, 'WiFi Attacks is on. Stop it?',
+                [('No, cancel', False), ('YES, stop', True)],
+                bg_drawer=self._bg)
+            if not ok:
+                return
+            try:
+                from attacks import ssid_spam as _ss
+                _ss.stop()
+            except Exception:
+                pass
 
         # Defensive wardrive check — only conflict if wardrive uses
         # the same radio (radio0). Default config uses wlan1mon (phy1)
@@ -729,7 +809,7 @@ class CaptiveUI:
         try:
             iface = self.config.get('capture_interface', 'wlan1mon')
             if iface.startswith('wlan0'):
-                self._flash('Wardrive on wlan0 — change iface', 2.0)
+                self._flash('Wardrive on wlan0 - change iface', 2.0)
                 return
         except Exception:
             pass

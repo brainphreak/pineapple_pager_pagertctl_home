@@ -227,6 +227,14 @@ def handle_action(action, pager, config, engine):
 
     if action == 'shutdown':
         _mark_wardrive_stopped()
+        # Tear down any running SSID Spam — otherwise hostapd + our
+        # UCI entries persist across reboot and start broadcasting
+        # before the UI is even up.
+        try:
+            from attacks import ssid_spam as _ss
+            _ss.stop()
+        except Exception:
+            pass
         pager.clear(0)
         pager.flip()
         pager.cleanup()
@@ -234,13 +242,20 @@ def handle_action(action, pager, config, engine):
         os._exit(0)  # skip finally block, pager already cleaned up
     elif action == 'reboot':
         # Restart UI — re-exec ourselves. was_scanning is preserved
-        # so auto_resume() picks up where we left off.
+        # so auto_resume() picks up where we left off. SSID spam is
+        # intentionally NOT stopped: hostapd keeps broadcasting
+        # across execv and we re-attach via resume_if_running().
         pager.cleanup()
         os.execv(sys.executable, [sys.executable] + sys.argv)
     elif action == 'bootloader':
         # Exit back to bootloader — user is leaving the app entirely,
-        # not just restarting it, so kill the scan state.
+        # not just restarting it, so kill everything.
         _mark_wardrive_stopped()
+        try:
+            from attacks import ssid_spam as _ss
+            _ss.stop()
+        except Exception:
+            pass
         return 'exit'
     elif action == 'sleep_screen':
         pager.screen_off()
@@ -264,6 +279,9 @@ def handle_action(action, pager, config, engine):
         result = wd.run(pager)
         pager.clear_input_events()
         if result == 'power':
+            # So we come back to this custom UI after the user exits
+            # the power menu instead of dropping to main dashboard.
+            engine._pending_redispatch = action
             engine.navigate_to('power_menu')
             engine.dirty = True
     elif action == 'sysinfo':
@@ -272,6 +290,9 @@ def handle_action(action, pager, config, engine):
         result = si.run(pager, engine)
         pager.clear_input_events()
         if result == 'power':
+            # So we come back to this custom UI after the user exits
+            # the power menu instead of dropping to main dashboard.
+            engine._pending_redispatch = action
             engine.navigate_to('power_menu')
             engine.dirty = True
     elif action == 'settings':
@@ -280,6 +301,9 @@ def handle_action(action, pager, config, engine):
         result = st.run(pager, engine)
         pager.clear_input_events()
         if result == 'power':
+            # So we come back to this custom UI after the user exits
+            # the power menu instead of dropping to main dashboard.
+            engine._pending_redispatch = action
             engine.navigate_to('power_menu')
             engine.dirty = True
     elif action == 'captive':
@@ -288,6 +312,20 @@ def handle_action(action, pager, config, engine):
         result = cu.run(pager, engine)
         pager.clear_input_events()
         if result == 'power':
+            # So we come back to this custom UI after the user exits
+            # the power menu instead of dropping to main dashboard.
+            engine._pending_redispatch = action
+            engine.navigate_to('power_menu')
+            engine.dirty = True
+    elif action == 'wifi_attacks':
+        from wifi_attacks_ui import get_wifi_attacks
+        wa = get_wifi_attacks()
+        result = wa.run(pager, engine)
+        pager.clear_input_events()
+        if result == 'power':
+            # So we come back to this custom UI after the user exits
+            # the power menu instead of dropping to main dashboard.
+            engine._pending_redispatch = action
             engine.navigate_to('power_menu')
             engine.dirty = True
     elif action.startswith('launch_'):
@@ -409,6 +447,16 @@ def main():
         _wcfg = _wc()
         if _wcfg.get('web_server', False):
             start_web_ui(port=_wcfg.get('web_port', 1337))
+    except Exception:
+        pass
+
+    # Resume SSID Spam if it was running before this UI restart.
+    # hostapd keeps broadcasting across our os.execv restart, so we
+    # just re-attach the Python-side state instead of leaving a ghost
+    # AP that can't be stopped from the UI.
+    try:
+        from attacks import ssid_spam as _ss
+        _ss.resume_if_running()
     except Exception:
         pass
 
@@ -579,6 +627,29 @@ def main():
                         # Don't drain more events this iteration — let the
                         # next tick do it cleanly.
                         break
+
+            # -- Pending re-dispatch after modal exit --
+            # Custom-UI dispatchers set engine._pending_redispatch when
+            # the user pops into the power menu from inside wifi_attacks /
+            # captive / wardrive / sysinfo / settings. When the engine
+            # has moved off power_menu (user hit Back), re-enter the
+            # custom UI instead of landing on the stack's prior screen
+            # (normally the main dashboard).
+            pending = getattr(engine, '_pending_redispatch', None)
+            if pending:
+                cur_name = (getattr(engine.current_screen, 'name', '')
+                            if engine.current_screen else '')
+                if cur_name != 'power_menu':
+                    engine._pending_redispatch = None
+                    try:
+                        result = handle_action(pending, pager, config, engine)
+                        _refresh_config()
+                        full_b, dim_b, dim_secs, off_secs = _reload_power_config()
+                        last_activity = time.time()
+                        if result == 'exit':
+                            return
+                    except Exception:
+                        pass
 
             # -- Screen power state machine --
             elapsed = time.time() - last_activity

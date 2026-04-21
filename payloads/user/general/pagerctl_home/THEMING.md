@@ -165,7 +165,7 @@ changes.
 
 ### Dashboards
 
-- **Home / Wargames dashboard** — `components/dashboards/wargames_dashboard.json`
+- **Main dashboard** (home screen with the 6 buttons) — `components/dashboards/main_dashboard.json`
 - **Alerts dashboard** — `components/dashboards/dashboard_alerts.json`
 - **PineAP dashboard** — `components/dashboards/dashboard_pineap.json`
 - **Recon dashboard** — `components/dashboards/dashboard_recon.json`
@@ -213,7 +213,340 @@ changes.
 ### Status bars
 
 - `components/status_bars/status_bar*.json` — per-mode layouts with
-  battery / time / brightness / status icon widgets.
+  battery / time / brightness / status icon widgets. See
+  [Status-bar widgets](#status-bar-widgets) below for how to
+  show/hide per screen and how to theme them.
+
+## Button Targets
+
+Every selectable menu item in a dashboard JSON has a `target` string
+that determines what pressing **A** does. A button can do any of:
+
+- **Launch a payload** — `target: "launch_<payload_title>"`. The
+  engine finds an installed payload by name and runs it. No Python
+  needed; works for any payload under `/mmc/root/payloads/user/`.
+- **Navigate to a built-in screen** — `target: "captive_dashboard"`,
+  `"wardrive_dashboard"`, `"settings_menu"`, etc.
+- **Navigate to a custom dashboard you write** — drop a new
+  `components/dashboards/<your>.json`, register it in `theme.json`,
+  point a button at it. Your dashboard can have its own sub-pages
+  navigable by left/right, its own buttons that jump to further
+  sub-screens, and so on — all in JSON.
+- **Trigger a special action** — `back`, `power`, `noop`,
+  `inline_toggle`.
+
+Details for each below.
+
+### Built-in screen targets
+
+Point `target` at one of these to navigate to that screen:
+
+| Target | What it opens |
+|--------|---------------|
+| `main_dashboard` | Home screen (the 6-button grid) |
+| `payloads_dashboard` | Payloads category list |
+| `captive_dashboard` | Captive Portal (rogue AP) |
+| `wifi_attacks_dashboard` | WiFi Attacks toolkit |
+| `wardrive_dashboard` | Wardrive |
+| `sysinfo_dashboard` | System info |
+| `settings_menu` | Settings |
+| `power_menu` | Shutdown / restart / sleep |
+| `alerts_dashboard`, `dashboard_pineap`, `dashboard_recon`, etc. | The corresponding dashboard listed in `theme.json`'s `generic_menus` block |
+| Any key under `generic_menus` in `theme.json` | Engine navigates there by name — so you can add new screens purely by registering their JSON in `theme.json` and pointing a button at the key |
+
+### Payload launcher targets
+
+Any `target` that starts with `launch_` is treated as a payload
+launcher. The string after `launch_` is a slug; the engine normalizes
+underscores ↔ spaces and case-folds it, then looks up an installed
+payload with a matching `# Title:` (or payload directory name).
+
+```json
+{
+  "id": "LOKI",
+  "selected_layers": [
+    { "image_path": "assets/dashboard/pushbutton-down.png", "x": 0, "y": 0 },
+    { "text": "LOKI", "x": 101, "y": 17, "text_size": "large", "text_color_palette": "lcd_text" }
+  ],
+  "x": 5, "y": 44,
+  "target": "launch_loki"
+}
+```
+
+`launch_loki` → finds the payload whose `# Title:` is `Loki` under
+`/mmc/root/payloads/user/*/loki/` and shows it in the themed launch
+dialog. Works for any installed payload:
+
+- `launch_pagergotchi` → PagerGotchi
+- `launch_wardrive` → Wardrive (redundant with the built-in button
+  but useful if you want a second shortcut elsewhere)
+- `launch_my_payload` → any user payload titled "My Payload"
+
+Two names are blacklisted: `pagerctl_home` and `pagerctl_bootloader`
+are hidden from the payload browser (and can't be launched via
+`launch_*`). Everything else is fair game.
+
+### Special action targets
+
+| Target | Effect |
+|--------|--------|
+| `back` | Pop one screen off the navigation stack |
+| `noop` | No-op — use for placeholder buttons |
+| `power` | Open the power menu |
+| `inline_toggle` | Toggle the item's bound `variable` in-place without navigating (for ON/OFF switches) |
+
+### Adding a new button to the main dashboard
+
+`main_dashboard.json` has two `pages`, each with 3 `menu_items`. To
+add a 7th/8th/Nth button, either add a new `menu_items` entry to an
+existing page (beware of overlapping y-coordinates on the `pushbutton`
+background images — adjust `y` per new row) or add a new page with
+`"page_index": 2` and left/right button backgrounds under
+`background.layers`.
+
+Example: add a "LOKI" payload shortcut to the right page:
+
+```json
+{
+  "id": "LOKI",
+  "layers": [],
+  "selected_layers": [
+    { "image_path": "assets/dashboard/pushbutton-down-right.png", "x": 0, "y": 0 },
+    { "text": "LOKI", "x": -331, "y": 17, "text_size": "large", "text_color_palette": "lcd_text" }
+  ],
+  "x": 437, "y": 44,
+  "target": "launch_loki"
+}
+```
+
+Plus a matching `{ "image_path": "pushbutton-up-right.png", "x": 437, "y": 44 }`
+in `background.layers`. No Python changes needed — the engine
+dispatches `launch_*` generically.
+
+### Making an entirely new dashboard launchable from a button
+
+1. Write `components/dashboards/my_panel.json` modeled on an existing
+   one.
+2. Register it in `theme.json`:
+   ```json
+   "generic_menus": {
+     ...,
+     "my_panel": "components/dashboards/my_panel.json"
+   }
+   ```
+3. Add a button with `"target": "my_panel"` to any dashboard.
+
+No Python changes needed — the engine navigates to any name listed in
+`generic_menus` automatically. Only panels with bespoke interactive
+render loops (captive, wardrive, wifi_attacks, sysinfo, settings) need
+extra Python glue; a pure JSON menu/dialog does not.
+
+### Custom dashboards with sub-pages
+
+Dashboard JSONs have a `pages` array. Each page has a `page_index`
+and a `menu_items` list. **Left / right** navigates between pages.
+That's the mechanism the main dashboard uses for its two screens of
+buttons — any theme author can do the same to fit more buttons.
+
+Minimum multi-page dashboard (reusing the main dashboard's pushbutton
+art for convenience):
+
+```json
+{
+  "screen_name": "my_panel",
+  "status_bar": "default",
+  "button_map": {
+    "a": "select",
+    "b": "back",
+    "up": "previous",
+    "down": "next",
+    "left": "previous_page",
+    "right": "next_page"
+  },
+  "background": {
+    "layers": [
+      { "image_path": "assets/dashboard/circuit_bg.png", "x": 0, "y": 0 },
+      { "image_path": "assets/dashboard/pushbutton-up.png", "x": 5, "y": 44 },
+      { "image_path": "assets/dashboard/pushbutton-up.png", "x": 5, "y": 93 },
+      { "image_path": "assets/dashboard/pushbutton-up.png", "x": 5, "y": 143 }
+    ],
+    "background_color": { "r": 0, "g": 0, "b": 0 }
+  },
+  "pages": [
+    {
+      "page_index": 0,
+      "menu_items": [
+        {
+          "id": "MY_PAYLOAD", "x": 5, "y": 44, "target": "launch_my_payload",
+          "selected_layers": [
+            { "image_path": "assets/dashboard/pushbutton-down.png", "x": 0, "y": 0 },
+            { "text": "MY PAYLOAD", "x": 101, "y": 17,
+              "text_size": "large", "text_color_palette": "lcd_text" }
+          ]
+        },
+        {
+          "id": "SUBMENU_A", "x": 5, "y": 93, "target": "my_submenu_a",
+          "selected_layers": [
+            { "image_path": "assets/dashboard/pushbutton-down.png", "x": 0, "y": 0 },
+            { "text": "SUBMENU A", "x": 101, "y": -32,
+              "text_size": "large", "text_color_palette": "lcd_text" }
+          ]
+        },
+        {
+          "id": "BACK", "x": 5, "y": 143, "target": "back",
+          "selected_layers": [
+            { "image_path": "assets/dashboard/pushbutton-down.png", "x": 0, "y": 0 },
+            { "text": "BACK", "x": 101, "y": -82,
+              "text_size": "large", "text_color_palette": "lcd_text" }
+          ]
+        }
+      ]
+    },
+    {
+      "page_index": 1,
+      "menu_items": [
+        {
+          "id": "OTHER_PAYLOAD", "x": 5, "y": 44, "target": "launch_another_payload",
+          "selected_layers": [
+            { "image_path": "assets/dashboard/pushbutton-down.png", "x": 0, "y": 0 },
+            { "text": "OTHER", "x": 101, "y": 17,
+              "text_size": "large", "text_color_palette": "lcd_text" }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+That gives you a two-page custom panel: page 0 has a payload launcher,
+a submenu jump, and a back button; page 1 has another payload. Left/
+right switch pages. Register the file under `generic_menus` in
+`theme.json` as above, and the `SUBMENU A` button would similarly
+reference another JSON you add to `generic_menus`.
+
+You can nest as deep as you want — every dashboard JSON in
+`generic_menus` is reachable by name, so a button in panel A can
+point at panel B, which has a button pointing at panel C, etc. The
+engine maintains a navigation stack so `"target": "back"` / the **B**
+button pops one level.
+
+### Putting it together
+
+A theme author who wants to add an 8-button main dashboard with
+mixed "launch payload" and "open submenu" behaviors can do all of
+it by editing JSON:
+
+1. Edit `main_dashboard.json` to add the extra `menu_items` (and
+   matching `pushbutton-*.png` entries in `background.layers`).
+2. For each new button, set `target` to either `launch_<payload>`
+   or the name of a dashboard registered under `generic_menus`.
+3. For each new submenu dashboard, write its own JSON, add it to
+   `generic_menus` in `theme.json`.
+
+No Python, no rebuild. Theme packs can ship entirely new navigation
+trees this way.
+
+## Status-bar widgets
+
+The "status bar" (battery, clock, brightness, WiFi / GPS / Bluetooth
+icons) is a set of live widgets the engine can draw on top of any
+dashboard. Visibility and layout are both theme-controlled — no
+Python edits required.
+
+### Showing or hiding the status bar per screen
+
+Every dashboard component JSON has an optional top-level key:
+
+```json
+"status_bar": "default"
+```
+
+- Set it to a name (`"default"`, `"min"`, `"network"`, `"recon"`,
+  `"gps"`) to render that status bar on the screen.
+- Omit it or set it to `null` to hide the status bar entirely on
+  that screen.
+
+This works for the engine's own screens (main dashboard, settings,
+alerts, pineap, recon) and for the custom-rendered ones
+(`wardrive_dashboard`, `captive_dashboard`) — each custom renderer
+reads the same field. So a theme that wants battery/clock on the
+Wardrive screen just adds `"status_bar": "default"` to
+`wardrive_dashboard.json`; a theme that wants the captive portal
+cleaner just removes it from `captive_dashboard.json`.
+
+### Available status bar variants
+
+Listed in `theme.json` under the `status_bars` block:
+
+```json
+"status_bars": {
+  "default": "components/status_bars/status_bar.json",
+  "network": "components/status_bars/status_bar_network.json",
+  "recon":   "components/status_bars/status_bar_recon.json",
+  "min":     "components/status_bars/status_bar_min.json",
+  "gps":     "components/status_bars/status_bar_gps.json"
+}
+```
+
+Each of those JSONs describes *what* renders and *where*. Change
+them to reskin.
+
+### Styling the widgets
+
+A status bar JSON looks like:
+
+```json
+{
+  "background": { "layers": [], "background_color": { "r": 0, "g": 0, "b": 0 } },
+  "status_bar_items": {
+    "Time":       { "x": 213, "y": 5, "text_size": 3, "recolor_palette": "lcd_text", "layers": {...} },
+    "Battery":    { "x": 429, "y": 3, "icon_w": 46, "icon_h": 24, "text_size": 3, "text_gap": 4, "layers": {...} },
+    "Brightness": { ... },
+    "Wifi":       { ... },
+    "Gps":        { ... },
+    "Bluetooth":  { ... }
+  }
+}
+```
+
+- **`x`, `y`** — absolute position of the widget on the screen.
+- **`text_size`** — font size for widgets that draw text (Time,
+  Battery percentage). Use an integer or one of `small`/`medium`/
+  `large` if you want it resolved through `theme_utils`.
+- **`icon_w`, `icon_h`** — size of the widget's icon image (used by
+  Battery, Bluetooth, etc.).
+- **`text_gap`** — pixels between the icon and the text for widgets
+  that combine both.
+- **`recolor_palette`** — applies one of the `color_palette` entries
+  from `theme.json` to a monochrome icon + text. Change to pick a
+  different accent.
+- **`layers`** — per-state icon image lists (e.g. Battery has
+  `discharging`, `charging_25`, `charging_50`, ..., `charged`). Swap
+  the PNG paths to re-skin an icon; add a new state and its icon if
+  you want finer granularity.
+
+### Adding a new status bar variant
+
+1. Create `components/status_bars/status_bar_mine.json` modelled on
+   one of the existing ones.
+2. Register it in `theme.json`:
+   ```json
+   "status_bars": {
+     ...,
+     "mine": "components/status_bars/status_bar_mine.json"
+   }
+   ```
+3. Reference it from any dashboard component: `"status_bar": "mine"`.
+
+### Removing individual widgets without rewriting the status bar
+
+Two options:
+
+- Delete the widget's entry from `status_bar_items` (e.g. remove
+  `"Bluetooth": { ... }` to drop the BT icon).
+- Or set its position off-screen (e.g. `"x": -100`) if you want to
+  keep the definition but hide it on this variant.
 
 ## Remaining Inline-Drawn Surfaces
 

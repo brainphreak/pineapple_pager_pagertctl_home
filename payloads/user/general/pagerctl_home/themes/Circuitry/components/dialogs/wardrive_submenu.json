@@ -1,0 +1,17 @@
+{
+  "screen_name": "wardrive_submenu",
+  "title": {
+    "y": 20,
+    "font": "title",
+    "font_size": 28,
+    "color": "info_accent"
+  },
+  "items": {
+    "start_y": 58,
+    "row_height": 22,
+    "font": "menu",
+    "font_size": "medium",
+    "color_selected": "green",
+    "color_unselected": "white"
+  }
+}

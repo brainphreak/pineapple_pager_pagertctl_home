@@ -19,5 +19,14 @@
         { "variable_name": "$_INPUT", "use_template": "spinner_text" }
       ]
     }
-  ]
+  ],
+  "text_area": {
+    "x": 165, "y": 62, "w": 150, "h": 61,
+    "font": "menu",
+    "font_size": 12,
+    "color": "warning_accent",
+    "max_chars": 16,
+    "max_lines": 4,
+    "line_height": 14
+  }
 }

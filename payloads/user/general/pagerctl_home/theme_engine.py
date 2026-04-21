@@ -262,7 +262,7 @@ class ThemeEngine:
                     self._status_bars[name] = json.load(f)
         self._create_widgets_from_status_bar('default')
 
-        # Load home screen (wargames_dashboard)
+        # Load home screen (main_dashboard)
         home = self.theme.get('generic_menus', {}).get('dashboard_path')
         if home:
             self._load_screen(os.path.join(theme_dir, home))
@@ -374,6 +374,11 @@ class ThemeEngine:
         # Captive portal subscreen
         if target == 'captive_dashboard':
             return 'captive'
+
+        # WiFi Attacks — captive-style grid dashboard for deauth,
+        # handshake capture, SSID spam, WPS, probe mon, scan, karma.
+        if target == 'wifi_attacks_dashboard':
+            return 'wifi_attacks'
 
         # Inline toggle — no navigation
         if target == 'inline_toggle':

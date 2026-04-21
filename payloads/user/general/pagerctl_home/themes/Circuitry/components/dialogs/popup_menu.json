@@ -1,0 +1,30 @@
+{
+  "screen_name": "popup_menu",
+  "windowed_canvas": true,
+  "box": {
+    "max_width_margin": 40,
+    "max_height_margin": 30,
+    "padding_x": 40,
+    "padding_y_top": 8,
+    "padding_y_bottom": 16,
+    "border_color": "info_accent",
+    "border_width": 1,
+    "fill": "modal_bg",
+    "separator_inset_x": 4
+  },
+  "title": {
+    "y_offset": 6,
+    "height": 26,
+    "font": "menu",
+    "font_size": "medium",
+    "color": "info_accent"
+  },
+  "items": {
+    "y_offset": 8,
+    "row_height": 22,
+    "font": "menu",
+    "font_size": "medium",
+    "color_selected": "warning_accent",
+    "color_unselected": "modal_body"
+  }
+}

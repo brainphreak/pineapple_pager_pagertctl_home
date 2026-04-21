@@ -58,6 +58,11 @@
       "label": "General",
       "items": [
         {
+          "label": "Show Classic Payloads",
+          "key": "show_classic_payloads",
+          "type": "toggle"
+        },
+        {
           "label": "Test Beep",
           "type": "action",
           "action": "test_beep"
@@ -225,6 +230,7 @@
           "key": "wardrive_autostart",
           "type": "toggle"
         },
+        { "label": "pineapd",     "type": "service", "service_name": "pineapd" },
         { "label": "gpsd",        "type": "service", "service_name": "gpsd" },
         { "label": "sshd",        "type": "service", "service_name": "sshd" },
         { "label": "bluetoothd",  "type": "service", "service_name": "bluetoothd" },

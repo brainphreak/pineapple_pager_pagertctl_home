@@ -21,6 +21,8 @@ from pagerctl import PAGER_EVENT_PRESS
 import duckyctl
 from wardrive.config import FONT_TITLE, FONT_MENU, load_config
 
+import theme_utils
+
 # Stock pager ringtone library. These are the files the original
 # Hak5 firmware ships and match the ALERT/ERROR sounds users expect.
 _STOCK_RTTTL_DIR = '/lib/pager/ringtones'
@@ -56,7 +58,8 @@ def _load_rtttl(name):
     return ''.join(lines).replace(' ', '')
 
 
-THEME_DIR_FALLBACK = '/root/payloads/user/general/pagerctl_home/themes/Circuitry'
+THEME_DIR_FALLBACK = os.environ.get('PAGERCTL_THEME',
+    '/root/payloads/user/general/pagerctl_home/themes/Circuitry')
 
 # Layout matches the Circuitry payload_log_bg.png. The background has
 # a cyan separator line at y≈20 — title goes above it, log body below.
@@ -115,30 +118,66 @@ class _LogRender:
             pass
         self._loaded = True
 
+    def _spinner_cfg(self):
+        """Lazy-load spinner.json once per render instance."""
+        cfg = getattr(self, '_spinner_cfg_cache', None)
+        if cfg is not None:
+            return cfg
+        cfg = _load_json(self.theme_dir, 'components/spinner.json') or {}
+        self._spinner_cfg_cache = cfg
+        return cfg
+
     def _render_spinner(self, text):
-        """Draw the Circuitry spinner — 4-frame pager icon animation
-        at (140, 40) cycling every 0.4s, with text label centered
-        INSIDE the icon (per spinner_text.json template: centered
-        within x=165..315, y=62..123). Called each render tick while
-        spinner_state['active'] is True."""
+        """Draw the spinner from components/spinner.json — animation
+        frames, tick interval, and text area all come from the theme.
+        Fallbacks preserve the original hardcoded layout if the JSON
+        is missing or truncated."""
         self._load_spinner_frames()
         p = self.pager
         try:
             p.clear(0)
+            cfg = self._spinner_cfg()
+
+            # Animation + interval + per-frame position
+            interval = 0.4
+            anim = None
+            for item in (cfg.get('menu_items') or []):
+                if item.get('id') == 'spinner' and item.get('animation'):
+                    anim = item.get('animation')
+                    interval = float(item.get('animation_interval', interval))
+                    break
+
             now = time.time()
-            if now - self._spinner_last_tick >= 0.4:
+            if now - self._spinner_last_tick >= interval:
                 self._spinner_frame_idx = (
                     (self._spinner_frame_idx + 1)
-                    % len(self._spinner_frames))
+                    % max(1, len(self._spinner_frames)))
                 self._spinner_last_tick = now
-            frame = self._spinner_frames[self._spinner_frame_idx]
-            if frame is not None:
-                p.draw_image(140, 40, frame)
-            # Text centered inside the pager icon. The template
-            # bounds are x=165..315 (150 px wide), y=62..123.
-            # Word-wrap at 16 chars, small font, yellow.
+            if self._spinner_frames:
+                frame = self._spinner_frames[self._spinner_frame_idx]
+                if frame is not None:
+                    if anim and self._spinner_frame_idx < len(anim):
+                        fx = int(anim[self._spinner_frame_idx].get('x', 140))
+                        fy = int(anim[self._spinner_frame_idx].get('y', 40))
+                    else:
+                        fx, fy = 140, 40
+                    p.draw_image(fx, fy, frame)
+
+            # Text area — bounds/font/color/wrap from JSON
             if text:
-                max_chars = 16
+                ta = cfg.get('text_area') or {}
+                tx = int(ta.get('x', 165))
+                ty = int(ta.get('y', 62))
+                tw = int(ta.get('w', 150))
+                th = int(ta.get('h', 61))
+                max_chars = int(ta.get('max_chars', 16))
+                max_lines = int(ta.get('max_lines', 4))
+                line_h = int(ta.get('line_height', 14))
+                fs = int(ta.get('font_size', 12))
+                font = FONT_TITLE if ta.get('font') == 'title' else FONT_MENU
+                text_color = theme_utils.get_color(
+                    p, ta.get('color', 'warning_accent'))
+
                 lines = []
                 cur = ''
                 for word in text.split():
@@ -150,20 +189,17 @@ class _LogRender:
                         cur = (cur + ' ' + word).strip()
                 if cur:
                     lines.append(cur)
-                # Center vertically in y=62..123 (61 px)
-                line_h = 14
+                lines = lines[:max_lines]
                 total_h = len(lines) * line_h
-                start_y = 62 + (61 - total_h) // 2
-                text_color = p.rgb(255, 220, 50)
-                for i, line in enumerate(lines[:4]):
-                    # Center horizontally in x=165..315 (150 px)
+                start_y = ty + (th - total_h) // 2
+                for i, line in enumerate(lines):
                     try:
-                        tw = p.ttf_width(line, FONT_MENU, 12)
+                        lw = p.ttf_width(line, font, fs)
                     except Exception:
-                        tw = len(line) * 7
-                    lx = 165 + (150 - tw) // 2
+                        lw = len(line) * 7
+                    lx = tx + (tw - lw) // 2
                     p.draw_ttf(lx, start_y + i * line_h, line,
-                               text_color, FONT_MENU, 12)
+                               text_color, font, fs)
             p.flip()
         except Exception:
             pass
@@ -186,17 +222,27 @@ class _LogRender:
             return []
 
     def _load_spinner_frames(self):
-        """Load the 4 Circuitry spinner frames if not already cached."""
+        """Load spinner frames listed in spinner.json's animation array.
+        Falls back to the legacy `assets/spinner/spinner{1..4}.png`
+        sequence if the JSON is missing or has no frames."""
         if hasattr(self, '_spinner_frames'):
             return
         self._spinner_frames = []
-        for i in range(1, 5):
-            path = os.path.join(self.theme_dir, 'assets', 'spinner',
-                                f'spinner{i}.png')
+        cfg = self._spinner_cfg()
+        anim = None
+        for item in (cfg.get('menu_items') or []):
+            if item.get('id') == 'spinner' and item.get('animation'):
+                anim = item.get('animation')
+                break
+        if anim:
+            frame_paths = [f.get('image_path') for f in anim if f.get('image_path')]
+        else:
+            frame_paths = [f'assets/spinner/spinner{i}.png' for i in range(1, 5)]
+        for rel in frame_paths:
+            path = os.path.join(self.theme_dir, rel)
             try:
                 if os.path.isfile(path):
-                    self._spinner_frames.append(
-                        self.pager.load_image(path))
+                    self._spinner_frames.append(self.pager.load_image(path))
                 else:
                     self._spinner_frames.append(None)
             except Exception:
@@ -223,17 +269,20 @@ class _LogRender:
             else:
                 p.clear(0)
 
+            accent = theme_utils.get_color(p, 'warning_accent')
+            log_c = theme_utils.get_color(p, 'pale_blue')
+
             # Title in yellow, above the cyan separator line in the bg.
             if title:
                 p.draw_ttf(TITLE_X, TITLE_Y, title[:40],
-                           p.rgb(255, 220, 50), FONT_TITLE, TITLE_FONT_SIZE)
+                           accent, FONT_TITLE, TITLE_FONT_SIZE)
 
             # Log body — each cached line in readable TTF below the line.
             visible = self.snapshot()[-LOG_MAX_LINES:]
             y = LOG_START_Y
             for line in visible:
                 p.draw_ttf(LOG_START_X, y, line[:LOG_MAX_CHARS],
-                           p.rgb(200, 220, 255), FONT_MENU, LOG_FONT_SIZE)
+                           log_c, FONT_MENU, LOG_FONT_SIZE)
                 y += LOG_LINE_H
 
             # Status indicator bar
@@ -248,7 +297,7 @@ class _LogRender:
                         'stopped':  'Stopped - press B',
                         'error':    'Error - press B'}[status]
                 p.draw_ttf(LOG_START_X, 200, hint,
-                           p.rgb(255, 220, 50), FONT_MENU, 12)
+                           accent, FONT_MENU, 12)
 
             p.flip()
         except Exception:
@@ -347,9 +396,9 @@ class _DialogRunner:
             self._alert(req)
         elif kind == 'confirm':
             self._confirm(req)
-        elif kind in ('list', 'string'):
+        elif kind == 'list':
             self._list(req)
-        elif kind in ('number', 'ip', 'mac'):
+        elif kind in ('number', 'ip', 'mac', 'string'):
             self._keyboard(req)
         elif kind == 'wait_button':
             btn = self._wait_button()
@@ -452,7 +501,7 @@ class _DialogRunner:
         try:
             import api_server
             label = 'accepted' if confirmed else ('cancelled' if pressed_b else 'denied')
-            api_server._payload_log.add(f'  → {label}',
+            api_server._payload_log.add(f'  -> {label}',
                 'green' if confirmed else 'red')
         except Exception:
             pass
@@ -632,7 +681,8 @@ class _DialogRunner:
         if 'text' in layer:
             text = str(layer['text'])
             size_name = layer.get('text_size', 'medium')
-            sz_map = {'small': 14.0, 'medium': 18.0, 'large': 24.0}
+            sz_map = {n: float(theme_utils.get_size(n))
+                      for n in ('small', 'medium', 'large')}
             sz = sz_map.get(size_name, 18.0)
             color = self._layer_color(layer)
             try:
@@ -662,39 +712,87 @@ class _DialogRunner:
         except Exception:
             return 0xFFFF
 
+    def _simple_modal_cfg(self):
+        """Lazy-load simple_modal.json once per runner."""
+        cfg = getattr(self, '_simple_modal_cfg_cache', None)
+        if cfg is not None:
+            return cfg
+        cfg = _load_json(self.theme_dir,
+                         'components/dialogs/simple_modal.json') or {}
+        self._simple_modal_cfg_cache = cfg
+        return cfg
+
     def _simple_modal(self, title, body, color='alert'):
-        """Fallback when no theme component is available: a plain
-        centered black box with yellow border, title at top, body
-        wrapped below."""
+        """Fallback modal when no theme component for this dialog
+        kind exists. All geometry, colors, and fonts come from
+        components/dialogs/simple_modal.json. Hardcoded defaults kick
+        in only if that component is missing or malformed."""
         p = self.pager
         try:
-            w, h = 360, 140
-            x, y = (480 - w) // 2, (222 - h) // 2
-            p.fill_rect(x, y, w, h, p.rgb(10, 10, 30))
-            p.fill_rect(x, y, w, 3, p.rgb(255, 220, 50))
-            p.fill_rect(x, y + h - 3, w, 3, p.rgb(255, 220, 50))
-            p.fill_rect(x, y, 3, h, p.rgb(255, 220, 50))
-            p.fill_rect(x + w - 3, y, 3, h, p.rgb(255, 220, 50))
-            p.draw_ttf(x + 12, y + 10, title[:32],
-                       p.rgb(255, 220, 50), FONT_TITLE, 20)
-            # Body — wrap at ~40 chars, max 4 lines
+            cfg = self._simple_modal_cfg()
+            box = cfg.get('box') or {}
+            tcfg = cfg.get('title') or {}
+            bcfg = cfg.get('body') or {}
+            fcfg = cfg.get('footer') or {}
+
+            w = int(box.get('w', 360))
+            h = int(box.get('h', 140))
+            x = int(box.get('x', (480 - w) // 2))
+            y = int(box.get('y', (222 - h) // 2))
+            bw = int(box.get('border_width', 3))
+            fill = theme_utils.get_color(p, box.get('fill', 'navy'))
+            edge = theme_utils.get_color(
+                p, box.get('border_color', 'warning_accent'))
+
+            p.fill_rect(x, y, w, h, fill)
+            p.fill_rect(x, y, w, bw, edge)
+            p.fill_rect(x, y + h - bw, w, bw, edge)
+            p.fill_rect(x, y, bw, h, edge)
+            p.fill_rect(x + w - bw, y, bw, h, edge)
+
+            title_font = FONT_TITLE if tcfg.get('font') == 'title' else FONT_MENU
+            title_fs = int(tcfg.get('font_size', 20))
+            title_c = theme_utils.get_color(
+                p, tcfg.get('color', 'warning_accent'))
+            tmax = int(tcfg.get('max_chars', 32))
+            tx = x + int(tcfg.get('x_offset', 12))
+            ty = y + int(tcfg.get('y_offset', 10))
+            p.draw_ttf(tx, ty, title[:tmax], title_c, title_font, title_fs)
+
+            body_font = FONT_TITLE if bcfg.get('font') == 'title' else FONT_MENU
+            body_fs = int(bcfg.get('font_size', 16))
+            body_c = theme_utils.get_color(
+                p, bcfg.get('color', 'modal_body'))
+            body_max = int(bcfg.get('max_chars', 40))
+            line_h = int(bcfg.get('line_height', 20))
+            bottom_pad = int(bcfg.get('bottom_pad', 30))
+            bx = x + int(bcfg.get('x_offset', 12))
+            by = y + int(bcfg.get('y_offset', 40))
+
             line = ''
-            ly = y + 40
+            ly = by
             for word in body.split():
-                if len(line) + 1 + len(word) > 40:
-                    p.draw_ttf(x + 12, ly, line, p.rgb(220, 220, 220),
-                               FONT_MENU, 16)
-                    ly += 20
-                    if ly > y + h - 30:
+                if len(line) + 1 + len(word) > body_max:
+                    p.draw_ttf(bx, ly, line, body_c, body_font, body_fs)
+                    ly += line_h
+                    if ly > y + h - bottom_pad:
                         break
                     line = word
                 else:
                     line = (line + ' ' + word).strip()
-            if line and ly <= y + h - 30:
-                p.draw_ttf(x + 12, ly, line, p.rgb(220, 220, 220),
-                           FONT_MENU, 16)
-            p.draw_ttf(x + 12, y + h - 22, 'Press any key',
-                       p.rgb(255, 220, 50), FONT_MENU, 12)
+            if line and ly <= y + h - bottom_pad:
+                p.draw_ttf(bx, ly, line, body_c, body_font, body_fs)
+
+            if fcfg:
+                ftxt = fcfg.get('text', 'Press any key')
+                footer_font = FONT_TITLE if fcfg.get('font') == 'title' else FONT_MENU
+                footer_fs = int(fcfg.get('font_size', 12))
+                footer_c = theme_utils.get_color(
+                    p, fcfg.get('color', 'warning_accent'))
+                fx = x + int(fcfg.get('x_offset', 12))
+                fy = y + h - int(fcfg.get('y_from_bottom', 22))
+                p.draw_ttf(fx, fy, ftxt, footer_c, footer_font, footer_fs)
+
             p.flip()
         except Exception:
             pass

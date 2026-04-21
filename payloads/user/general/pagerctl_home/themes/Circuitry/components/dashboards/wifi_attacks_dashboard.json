@@ -1,0 +1,18 @@
+{
+  "screen_name": "wifi_attacks_dashboard",
+  "bg_image": "assets/alert_dialog_bg_term_blue.png",
+  "grid": {
+    "col_x": [25, 240],
+    "col_widths": [200, 240],
+    "row_y_start": 30,
+    "row_height": 24,
+    "label_gap": 6
+  },
+  "text": {
+    "font": "menu",
+    "font_size": 17,
+    "label_selected": "warning_accent",
+    "label_unselected": "dim",
+    "value_default": "white"
+  }
+}

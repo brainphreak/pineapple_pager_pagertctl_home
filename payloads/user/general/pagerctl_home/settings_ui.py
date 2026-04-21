@@ -56,8 +56,9 @@ class SettingsUI:
         self.bg_handle = None
         bg_rel = self._layout.get('bg_image')
         if bg_rel:
-            theme_dir = engine.theme_dir if engine else os.path.join(
-                os.path.dirname(__file__), 'themes', 'Circuitry')
+            theme_dir = engine.theme_dir if engine else os.environ.get(
+                'PAGERCTL_THEME',
+                os.path.join(os.path.dirname(__file__), 'themes', 'Circuitry'))
             bg_path = os.path.join(theme_dir, bg_rel)
             if os.path.isfile(bg_path):
                 self.bg_handle = pager.load_image(bg_path)
@@ -66,8 +67,9 @@ class SettingsUI:
         return self._category_loop()
 
     def _load_layout(self):
-        theme_dir = self.engine.theme_dir if self.engine else os.path.join(
-            os.path.dirname(__file__), 'themes', 'Circuitry')
+        theme_dir = self.engine.theme_dir if self.engine else os.environ.get(
+            'PAGERCTL_THEME',
+            os.path.join(os.path.dirname(__file__), 'themes', 'Circuitry'))
         path = os.path.join(theme_dir, LAYOUT_REL)
         try:
             mtime = os.path.getmtime(path)
@@ -420,85 +422,31 @@ class SettingsUI:
     _KB_ACTIONS = {'BK', 'SP', 'OK', 'X'}
 
     def _edit_string(self, item):
-        """On-screen keyboard dialog — returns when user hits OK, X, or B."""
-        p = self.pager
+        """On-screen keyboard dialog. Delegates to the shared
+        pager_dialogs.edit_string so settings input uses the same
+        themed keyboard as everywhere else. Password-masked inputs
+        (item.secret) fall through to the grid renderer inside
+        edit_string since the themed keyboard doesn't mask yet."""
+        import pager_dialogs
         key = item.get('key', '')
-        buf = str(self.config.get(key, '') or '')
+        current = str(self.config.get(key, '') or '')
         secret = bool(item.get('secret'))
         label = item.get('label', 'Edit')
         maxlen = int(item.get('max_length', 48))
+        kb_variant = item.get('keyboard')  # 'numeric', 'hex', or None
 
-        rows = len(self._KB_ROWS)
-        cols = len(self._KB_ROWS[0])
-        cell_w = 40
-        cell_h = 28
-        grid_x0 = 20
-        grid_y0 = 80
-        sel_row, sel_col = 0, 0
-
-        c_label = self._color('category')
-        c_val = self._color('category_selected')
-        c_dim = self._color('dim')
-        c_cell = self._color('category')
-        c_cell_sel = self._color('category_selected')
-        fs = 18
-        cell_fs = 16
-
-        while True:
-            self._draw_bg()
-
-            # Header: label + current buffer (masked if secret)
-            p.draw_ttf(20, 40, f'{label}:', c_label, FONT_MENU, fs)
-            lw = p.ttf_width(f'{label}:', FONT_MENU, fs)
-            display = ('*' * len(buf)) if secret else buf
-            p.draw_ttf(20 + lw + 8, 40, display + '_', c_val, FONT_MENU, fs)
-
-            # Keyboard grid
-            for r in range(rows):
-                for c in range(cols):
-                    ch = self._KB_ROWS[r][c]
-                    x = grid_x0 + c * cell_w
-                    y = grid_y0 + r * cell_h
-                    is_sel = (r == sel_row and c == sel_col)
-                    if is_sel:
-                        p.fill_rect(x - 2, y - 2, cell_w - 4, cell_h - 4, p.rgb(40, 40, 40))
-                    color = c_cell_sel if is_sel else c_cell
-                    # Offset text for readability; multi-char labels smaller
-                    tfs = cell_fs if len(ch) == 1 else cell_fs - 2
-                    p.draw_ttf(x + 6, y + 2, ch, color, FONT_MENU, tfs)
-
-            self._draw_widgets()
-            p.flip()
-
-            btn = wait_any_button(p)
-            if btn & p.BTN_UP:
-                sel_row = (sel_row - 1) % rows
-            elif btn & p.BTN_DOWN:
-                sel_row = (sel_row + 1) % rows
-            elif btn & p.BTN_LEFT:
-                sel_col = (sel_col - 1) % cols
-            elif btn & p.BTN_RIGHT:
-                sel_col = (sel_col + 1) % cols
-            elif btn & p.BTN_A:
-                ch = self._KB_ROWS[sel_row][sel_col]
-                if ch == 'BK':
-                    buf = buf[:-1]
-                elif ch == 'SP':
-                    if len(buf) < maxlen:
-                        buf += ' '
-                elif ch == 'OK':
-                    self.config[key] = buf
-                    save_config(self.config)
-                    self._apply_side_effect(item)
-                    self._flash('Saved')
-                    return
-                elif ch == 'X':
-                    return
-                else:
-                    if len(buf) < maxlen:
-                        buf += ch
-            elif btn & p.BTN_B:
-                return
+        result = pager_dialogs.edit_string(
+            self.pager, label, current,
+            secret=secret, max_length=maxlen,
+            bg_drawer=self._draw_bg,
+            keyboard=kb_variant,
+        )
+        if result is None:
+            return
+        self.config[key] = result
+        save_config(self.config)
+        self._apply_side_effect(item)
+        self._flash('Saved')
 
     def _service_state(self, name, process_name=None):
         """Return (running, enabled) tuple for an init.d service.
@@ -928,6 +876,16 @@ class SettingsUI:
                         [('No, cancel', False), ('YES, disable', True)]):
                     return
                 wifi_utils.set_hotspot(False)
+            elif mode == 'wifi_attacks':
+                if not self._popup_menu(
+                        'WiFi Attacks is on. Stop it?',
+                        [('No, cancel', False), ('YES, stop', True)]):
+                    return
+                try:
+                    from attacks import ssid_spam as _ss
+                    _ss.stop()
+                except Exception:
+                    pass
             choice = self._popup_menu(
                 'Enable PineAP capture?',
                 [('No, cancel', False), ('YES, enable', True)],
@@ -981,6 +939,16 @@ class SettingsUI:
                         [('No, cancel', False), ('YES, disable', True)]):
                     return
                 wifi_utils.set_pineap_capture(False)
+            elif mode == 'wifi_attacks':
+                if not self._popup_menu(
+                        'WiFi Attacks is on. Stop it?',
+                        [('No, cancel', False), ('YES, stop', True)]):
+                    return
+                try:
+                    from attacks import ssid_spam as _ss
+                    _ss.stop()
+                except Exception:
+                    pass
 
             ssid = self.config.get('hotspot_ssid', '') or cur_ssid or 'pager'
             password = self.config.get('hotspot_password', '') or cur_key

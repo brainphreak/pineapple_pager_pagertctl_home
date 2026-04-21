@@ -19,7 +19,7 @@
     "evilwpa_wizard": "components/pineap/evilwpa_wizard.json",
     "power_menu": "components/dashboards/power_menu.json",
     "regulatory": "components/settings/regulatory.json",
-    "dashboard_path": "components/dashboards/wargames_dashboard.json",
+    "dashboard_path": "components/dashboards/main_dashboard.json",
     "alerts_dashboard": "components/dashboards/dashboard_alerts.json",
 
     "pineap_pineap_submenu": "components/pineap/submenu_pineap_pineap.json",
@@ -79,6 +79,12 @@
 
   "spinner_path": "components/spinner.json",
   "boot_spinner_path": "components/boot_animation.json",
+  "simple_modal_path": "components/dialogs/simple_modal.json",
+  "popup_menu_path": "components/dialogs/popup_menu.json",
+  "wardrive_submenu_path": "components/dialogs/wardrive_submenu.json",
+  "wardrive_message_box_path": "components/dialogs/wardrive_message_box.json",
+  "captive_dashboard_path": "components/dashboards/captive_dashboard.json",
+  "wifi_attacks_dashboard_path": "components/dashboards/wifi_attacks_dashboard.json",
 
   "keyboard_path": "components/keyboards/ui_keyboard.json",
   "number_keyboard_path": "components/keyboards/ui_keyboard_numeric.json",
@@ -196,7 +202,23 @@
     "light_yellow":{ "r":250, "g":225, "b":120 },
     "soft_white":{ "r":230, "g":230, "b":220 },
     "lcd_text":{ "r":35, "g":75, "b":35 },
-    "dark_blue":{ "r":15, "g":30, "b":120 }
+    "dark_blue":{ "r":15, "g":30, "b":120 },
+
+    "selection_bg":{ "r":40, "g":40, "b":40 },
+    "highlight_bg":{ "r":30, "g":50, "b":80 },
+    "warning_accent":{ "r":255, "g":220, "b":50 },
+    "info_accent":{ "r":100, "g":200, "b":255 },
+    "dim":{ "r":120, "g":120, "b":120 },
+    "light_gray":{ "r":180, "g":180, "b":180 },
+    "pale_blue":{ "r":200, "g":220, "b":255 },
+    "modal_body":{ "r":220, "g":220, "b":220 },
+    "modal_bg":{ "r":0, "g":0, "b":0 }
+  },
+
+  "text_sizes":{
+    "small":  14,
+    "medium": 18,
+    "large":  24
   },
 
   "_unused" : {

@@ -176,7 +176,8 @@ def get_pineap_state():
 
 
 def get_active_wifi_mode():
-    """Return one of 'captive', 'pineap', 'hotspot', or None.
+    """Return one of 'captive', 'pineap', 'hotspot', 'wifi_attacks',
+    or None.
 
     Used to enforce mutual exclusion: only one of these AP modes can
     run at a time because they share radio0 / the AP interfaces /
@@ -201,6 +202,15 @@ def get_active_wifi_mode():
         from captive import ap_control
         if ap_control.marker_exists():
             return 'captive'
+    except Exception:
+        pass
+    # SSID Spam leaves /tmp/pagerctl_ssid_spam_wireless.bak while
+    # active — simpler signal than importing the attacks module
+    # (avoids a circular import into the wardrive/ package).
+    try:
+        import os as _os
+        if _os.path.isfile('/tmp/pagerctl_ssid_spam_wireless.bak'):
+            return 'wifi_attacks'
     except Exception:
         pass
     if get_pineap_state():

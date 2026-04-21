@@ -1,0 +1,26 @@
+# Generic-looking SSIDs commonly auto-joined by nearby devices
+Free Public WiFi
+Free WiFi
+Free Airport WiFi
+xfinitywifi
+attwifi
+Starbucks WiFi
+Google Starbucks
+Optimum WiFi
+Spectrum WiFi
+Public WiFi
+Guest
+Guest-WiFi
+Hotel WiFi
+Open Network
+linksys
+NETGEAR
+NETGEAR-Guest
+dlink
+TP-LINK
+Comcast
+Boingo_Hotspot
+McDonalds Free WiFi
+Panera
+Airport Free WiFi
+Hilton Honors
