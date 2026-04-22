@@ -40,24 +40,51 @@ PAYLOAD_DIR = os.path.dirname(os.path.abspath(__file__))
 SETTINGS_FILE = os.path.join(PAYLOAD_DIR, 'settings.json')
 
 
-def _exit_target_label():
-    """'Bootloader' when pagerctl_home was launched by the bootloader,
-    'Hak5 UI' when launched from the stock pineapplepager UI. The exit
-    action (`return 'exit'`) returns control to whatever parent process
-    spawned us, so the label just needs to match that parent.
+def _launched_from_hak5_ui():
+    """True if pagerctl_home was started as a payload from the stock
+    Hak5 UI rather than by the bootloader. The Hak5 UI stops
+    pineapplepager before running a payload, so the reliable signal
+    is: `/etc/init.d/pineapplepager` exists AND pineapplepager is
+    not currently running. The bootloader doesn't kill pineapplepager
+    (it's the one that chose us over it at boot), and on pure-
+    pagerctl_home boot pineapplepager wouldn't be installed as a
+    service either, so this check won't misfire there.
 
-    Detection: read parent process's comm. Stock UI is pineapplepager;
-    bootloader launches us via its own python/shell, which reads as
-    something else. Default to 'Bootloader' when detection fails so
-    the auto-boot case (the common one) stays correct."""
+    Computed once at startup and cached — by the time we're navigating
+    the power menu, the answer is stable and we don't want to re-run
+    subprocesses on every screen load."""
+    global _HAK5_CACHED
+    if _HAK5_CACHED is not None:
+        return _HAK5_CACHED
+    result = False
     try:
-        with open(f'/proc/{os.getppid()}/comm') as f:
-            parent = f.read().strip()
+        if os.path.isfile('/etc/init.d/pineapplepager'):
+            r = subprocess.run(['pgrep', '-x', 'pineapplepager'],
+                               capture_output=True, timeout=3)
+            result = (r.returncode != 0)
     except Exception:
-        return 'Bootloader'
-    if 'pineapplepager' in parent.lower():
-        return 'Hak5 UI'
-    return 'Bootloader'
+        result = False
+    _HAK5_CACHED = result
+    return result
+
+
+_HAK5_CACHED = None
+
+
+def _exit_target_label():
+    return 'Hak5 UI' if _launched_from_hak5_ui() else 'Bootloader'
+
+
+def _restart_pineapplepager():
+    """Bring the Hak5 UI back up after we exit. Uses the init script
+    since that's what starts it on a normal boot."""
+    try:
+        subprocess.Popen(['/etc/init.d/pineapplepager', 'start'],
+                         stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+    except Exception:
+        pass
 
 
 def _patch_power_menu_exit_label(engine):
@@ -286,14 +313,21 @@ def handle_action(action, pager, config, engine):
         pager.cleanup()
         os.execv(sys.executable, [sys.executable] + sys.argv)
     elif action == 'bootloader':
-        # Exit back to bootloader — user is leaving the app entirely,
-        # not just restarting it, so kill everything.
+        # Exit back to whichever UI spawned us. When launched from the
+        # stock Hak5 UI, pineapplepager was stopped to make room for
+        # us — `return 'exit'` alone wouldn't bring it back, so kick
+        # off its init script before we tear down. When launched from
+        # the bootloader, pineapplepager is already disabled and the
+        # bootloader is blocked waiting on our process — plain exit
+        # returns control to it naturally.
         _mark_wardrive_stopped()
         try:
             from attacks import ssid_spam as _ss
             _ss.stop()
         except Exception:
             pass
+        if _launched_from_hak5_ui():
+            _restart_pineapplepager()
         return 'exit'
     elif action == 'sleep_screen':
         pager.screen_off()
