@@ -42,16 +42,17 @@ SETTINGS_FILE = os.path.join(PAYLOAD_DIR, 'settings.json')
 
 def _launched_from_hak5_ui():
     """True if pagerctl_home was started as a payload from the stock
-    Hak5 UI rather than by the bootloader. The Hak5 UI stops
-    pineapplepager before running a payload, so the reliable signal
-    is: `/etc/init.d/pineapplepager` exists AND pineapplepager is
-    not currently running. The bootloader doesn't kill pineapplepager
-    (it's the one that chose us over it at boot), and on pure-
-    pagerctl_home boot pineapplepager wouldn't be installed as a
-    service either, so this check won't misfire there.
+    Hak5 UI rather than by the bootloader. Both parents stop
+    pineapplepager before launching us, so "is pineapplepager running"
+    doesn't discriminate — the clean signal is whether the bootloader
+    process is alive and blocked waiting on us. If launch_menu.py is
+    running somewhere, the bootloader is our ancestor and returning
+    drops the user back into it; if not, we were launched from the
+    Hak5 UI and need to restart pineapplepager to get the user
+    anywhere usable.
 
-    Computed once at startup and cached — by the time we're navigating
-    the power menu, the answer is stable and we don't want to re-run
+    Computed once at startup and cached — by the time we're in the
+    power menu the answer is stable and we don't want to re-run
     subprocesses on every screen load."""
     global _HAK5_CACHED
     if _HAK5_CACHED is not None:
@@ -59,9 +60,10 @@ def _launched_from_hak5_ui():
     result = False
     try:
         if os.path.isfile('/etc/init.d/pineapplepager'):
-            r = subprocess.run(['pgrep', '-x', 'pineapplepager'],
+            r = subprocess.run(['pgrep', '-f', 'launch_menu.py'],
                                capture_output=True, timeout=3)
-            result = (r.returncode != 0)
+            bootloader_alive = (r.returncode == 0)
+            result = not bootloader_alive
     except Exception:
         result = False
     _HAK5_CACHED = result
